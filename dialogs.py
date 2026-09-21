@@ -1,8 +1,8 @@
 """Consistent content editors, with inline validation and contextual previews."""
 import tkinter as tk
-from tkinter import ttk
+from tkinter import colorchooser, ttk
 
-from library import THEMES
+from library import BORDER_RANGE, THEMES
 from storage import KINDS, STATES, MASTERY, RELATIONS
 
 INK = "#202943"
@@ -168,13 +168,14 @@ class MapDialog(Modal):
 
 
 class ContentDialog(Modal):
-    def __init__(self, parent, callback, node=None, relative=None, anchor=None, candidates=()):
+    def __init__(self, parent, callback, node=None, relative=None, anchor=None, candidates=(), colors=None):
         title = "编辑与补充内容" if node else {"before": "补充前置知识", "after": "探索下一步"}.get(relative, "添加一个新的学习内容")
         subtitle = "把目标、笔记和资料放在一起，让每个知识点更完整。"
         if anchor:
             subtitle = f"围绕「{anchor['title'][:48]}」完善你的学习路线。"
         super().__init__(parent, title, subtitle, height=730)
         self.callback, self.editing, self.relative, self.anchor = callback, node is not None, relative, anchor
+        self.colors = dict(colors or {})
         self.mode = tk.StringVar(value="new")
         self.keep_adding = tk.BooleanVar(value=False)
         self.allow_duplicate = tk.BooleanVar(value=False)
@@ -285,11 +286,12 @@ class ContentDialog(Modal):
         title = self.fields["title"].get().strip() or "新的学习内容"
         if self.mode.get() == "existing":
             title = self.existing_choice.get().rsplit("  ·  #", 1)[0] or "选择已有内容"
+        accent = self.colors.get(self.fields["kind"].get(), ACCENT)
         def card(y, text, active=False):
             rounded(c, 10, y+3, 225, y+87, fill="#e3e6f2", outline="")
-            rounded(c, 8, y, 223, y+84, fill="white", outline=ACCENT if active else "#dfe4ef", width=1.5)
+            rounded(c, 8, y, 223, y+84, fill="white", outline=accent if active else "#dfe4ef", width=1.5)
             c.create_text(24, y+29, text=text[:36], anchor="w", width=185, fill=INK, font=("Microsoft YaHei UI", 10, "bold"))
-            c.create_text(24, y+66, anchor="w", text=(self.fields["kind"].get()+"  /  "+self.fields["state"].get()) if active else "当前内容", fill=ACCENT if active else MUTED, font=("Microsoft YaHei UI", 8))
+            c.create_text(24, y+66, anchor="w", text=(self.fields["kind"].get()+"  /  "+self.fields["state"].get()) if active else "当前内容", fill=accent if active else MUTED, font=("Microsoft YaHei UI", 8))
         card(48, title if self.relative != "after" else self.anchor["title"], self.relative != "after")
         if self.anchor:
             c.create_line(116, 142, 116, 184, arrow="last", fill=ACCENT, width=2, dash=(4,3) if self.relative=="after" else ())
@@ -367,6 +369,116 @@ class RelationDialog(Modal):
         try:
             self.callback(self.choices[self.source.get()], self.choices[self.target.get()], self.kind.get())
         except ValueError as error:
+            self.failure(error)
+            return
+        self.destroy()
+
+
+class Swatch(tk.Canvas):
+    """Clickable colour chip. Its caption flips between dark and light ink."""
+
+    def __init__(self, parent, color, command):
+        super().__init__(parent, width=96, height=34, highlightthickness=0, bg="white", cursor="hand2")
+        self.command = command
+        self.bind("<ButtonRelease-1>", lambda e: self.command())
+        self.set_color(color)
+
+    def set_color(self, color):
+        self.color = color
+        self.delete("all")
+        rounded(self, 1, 1, 95, 33, 9, fill=color, outline="#c9d1e2")
+        self.create_text(48, 17, text=color.upper(), font=("Microsoft YaHei UI", 9), fill=contrast_ink(color))
+
+
+def contrast_ink(color):
+    red, green, blue = (int(color[index:index + 2], 16) for index in (1, 3, 5))
+    return "#1e293b" if (red * 299 + green * 587 + blue * 114) / 1000 > 150 else "#ffffff"
+
+
+class AppearanceDialog(Modal):
+    def __init__(self, parent, callback, colors, border, defaults=None, default_border=None):
+        super().__init__(parent, "调整模块的外观", "配色和边框只用于画布显示，属于当前地图，切换地图时各自保留。", width=700, height=690)
+        self.callback = callback
+        self.selected = dict(colors)
+        self.defaults = dict(defaults or {})
+        self.default_border = border if default_border is None else default_border
+        low, high = BORDER_RANGE
+        card = tk.Frame(self.body, bg="white", padx=26, pady=22)
+        card.pack(fill="both", expand=True)
+        label(card, "内容类型配色", 12, bold=True).pack(anchor="w")
+        label(card, "点一下色块挑新颜色，地图上的模块会立刻跟着变。", 10, MUTED).pack(anchor="w", pady=(6, 16))
+        self.swatches, self.captions = {}, {}
+        for kind in KINDS:
+            row = tk.Frame(card, bg="white")
+            row.pack(fill="x", pady=(0, 12))
+            holder = tk.Frame(row, bg="white", width=76, height=34)
+            holder.pack(side="left")
+            holder.pack_propagate(False)
+            label(holder, kind, 11, bold=True).pack(anchor="w", pady=(8, 0))
+            self.swatches[kind] = Swatch(row, self.selected[kind], lambda name=kind: self.pick(name))
+            self.swatches[kind].pack(side="left", padx=(14, 12))
+            self.captions[kind] = label(row, "", 10, MUTED)
+            self.captions[kind].pack(side="left")
+        ttk.Separator(card, orient="horizontal").pack(fill="x", pady=(16, 16))
+        top = tk.Frame(card, bg="white")
+        top.pack(fill="x")
+        label(top, "边框粗细", 12, bold=True).pack(side="left")
+        self.border_label = label(top, "", 11, ACCENT, bold=True)
+        self.border_label.pack(side="right")
+        label(card, "边框随画布缩放等比变化，这里设置的是 100% 时的粗细。", 9, MUTED, wraplength=560).pack(anchor="w", pady=(6, 10))
+        self.border = tk.DoubleVar(value=border)
+        ttk.Scale(card, from_=low, to=high, variable=self.border, command=self.border_changed).pack(fill="x")
+        ends = tk.Frame(card, bg="white")
+        ends.pack(fill="x")
+        label(ends, f"{low:g}", 9, MUTED).pack(side="left")
+        label(ends, f"{high:g}", 9, MUTED).pack(side="right")
+        if self.defaults:
+            SoftButton(self.footer, "恢复默认外观", self.reset, width=138).pack(side="left")
+        self.actions("保存外观")
+        self.repaint()
+        self.initial = self.values()
+        self.show()
+
+    def refresh_captions(self):
+        for kind, caption in self.captions.items():
+            caption.configure(text="将用于地图上的模块" if self.selected[kind] == self.defaults.get(kind) else "已自定义")
+
+    def border_value(self):
+        """Snap the slider to half steps so the saved number stays readable."""
+        low, high = BORDER_RANGE
+        try:
+            raw = float(self.border.get())
+        except (tk.TclError, ValueError):
+            return self.default_border
+        return round(max(low, min(high, raw)) * 2) / 2
+
+    def border_changed(self, value=None):
+        self.border_label.configure(text=f"{self.border_value():g} px")
+
+    def repaint(self):
+        for kind, swatch in self.swatches.items():
+            swatch.set_color(self.selected[kind])
+        self.refresh_captions()
+        self.border_changed()
+
+    def pick(self, kind):
+        _, picked = colorchooser.askcolor(color=self.selected[kind], title=f"为「{kind}」选择颜色", parent=self)
+        if picked:
+            self.selected[kind] = picked.lower()
+            self.repaint()
+
+    def reset(self):
+        self.selected = dict(self.defaults)
+        self.border.set(self.default_border)
+        self.repaint()
+
+    def values(self):
+        return tuple(sorted(self.selected.items())), self.border_value()
+
+    def submit(self):
+        try:
+            self.callback(dict(self.selected), self.border_value())
+        except (ValueError, OSError) as error:
             self.failure(error)
             return
         self.destroy()

@@ -12,19 +12,30 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from storage import KINDS, MASTERY, RELATIONS, STATES, Store
-from library import MapLibrary, THEMES
+from library import DEFAULT_BORDER, DEFAULT_COLORS, MapLibrary, THEMES
 from runtime import RELEASE_URL, prepare_data_dir
 from version import __version__
-from dialogs import ContentDialog, MapDialog, RelationDialog, SoftButton, bind_form_scroll
+from dialogs import AppearanceDialog, ContentDialog, MapDialog, RelationDialog, SoftButton, bind_form_scroll
 
 BASE = Path(__file__).resolve().parent
-COLORS = {"未开始": ("#f1f5f9", "#64748b"), "学习中": ("#eff6ff", "#2563eb"), "已完成": ("#ecfdf5", "#059669")}
+STATE_COLORS = {"未开始": "#64748b", "学习中": "#2563eb", "已完成": "#059669"}
+STATE_COLORS_DARK = {"未开始": "#adbed5", "学习中": "#8ab5ff", "已完成": "#65dab9"}
 EDGE_COLORS = {"前置依赖": "#64748b", "进阶延伸": "#8b5cf6", "相关内容": "#0d9488"}
+EDGE_COLORS_DARK = {"前置依赖": "#9badc8", "进阶延伸": "#b69bff", "相关内容": "#52cdb7"}
+GUIDE_COLOR = "#ff4f9a"
+# Node geometry in world units, shared by drawing and alignment snapping.
+NODE_HALF_WIDTH, NODE_HALF_HEIGHT, GUIDE_TOLERANCE = 100, 44, 7
 BACKGROUNDS = {
     "晴空点阵": ("#f3f7fc", "#d4deec", "#526580", "#ffffff", "#e0e8f3"),
     "暖纸网格": ("#faf7f0", "#e8e1d4", "#81705a", "#fffdf8", "#e8e0d1"),
     "午夜星空": ("#182338", "#2d3d58", "#a5b8d6", "#25344e", "#111c2e"),
 }
+
+
+def lighten(color, ratio):
+    """Lift a content colour so it stays readable on the dark canvas."""
+    channels = (int(color[index:index + 2], 16) for index in (1, 3, 5))
+    return "#" + "".join(f"{round(value + (255 - value) * ratio):02x}" for value in channels)
 
 
 class LearningMap(tk.Tk):
@@ -39,6 +50,8 @@ class LearningMap(tk.Tk):
         self.library = MapLibrary(database or prepare_data_dir() / "learning_map.db")
         self.map_id = self.library.active_id
         self.store = Store(self.library.path(self.map_id))
+        self.kind_colors = self.library.kind_colors(self.map_id)
+        self.border_width = self.library.border_width(self.map_id)
         self.selected = None
         self.loaded_form = None
         self.undo_stack = []
@@ -46,6 +59,9 @@ class LearningMap(tk.Tk):
         self.drag = None
         self.positions = {}
         self.visible = set()
+        self.guides = []
+        self.menu_request = None
+        self.popup = None
         self.graph_nodes, self.graph_edges = [], []
         self._draw_job = None
         self._build_ui()
@@ -102,6 +118,7 @@ class LearningMap(tk.Tk):
         self.map_picker.bind("<<ComboboxSelected>>", self.switch_map)
         SoftButton(maps_bar, "＋ 新建地图", self.new_map, width=118).pack(side="left", padx=(0, 8))
         ttk.Button(maps_bar, text="地图设置", command=self.rename_map).pack(side="left")
+        ttk.Button(maps_bar, text="外观设置", command=self.edit_appearance).pack(side="left", padx=(8, 0))
         self.theme = tk.StringVar(value=self.library.get(self.map_id)["theme"])
         theme_picker = ttk.Combobox(maps_bar, textvariable=self.theme, values=THEMES, state="readonly", width=11)
         theme_picker.pack(side="right")
@@ -171,14 +188,14 @@ class LearningMap(tk.Tk):
         self.canvas.bind("<B1-Motion>", self.canvas_motion)
         self.canvas.bind("<ButtonRelease-1>", self.canvas_release)
         self.canvas.bind("<Double-Button-1>", lambda e: self.edit_node() if any(t.startswith("node:") for t in self.canvas.gettags("current")) else None)
-        self.canvas.bind("<ButtonPress-3>", self.pan_press)
+        self.canvas.bind("<ButtonPress-3>", self.canvas_press_right)
         self.canvas.bind("<B3-Motion>", self.canvas_motion)
-        self.canvas.bind("<ButtonRelease-3>", self.canvas_release)
+        self.canvas.bind("<ButtonRelease-3>", self.canvas_release_right)
         self.canvas.bind("<MouseWheel>", self.zoom)
         self.canvas.bind("<Button-4>", lambda e: self.zoom(e, 1.1))
         self.canvas.bind("<Button-5>", lambda e: self.zoom(e, 1 / 1.1))
         ttk.Label(center, text="实线 → 前置依赖    紫虚线 → 进阶延伸    绿点线 — 相关内容", font=("Microsoft YaHei UI", 9)).pack(anchor="w", pady=(8, 2))
-        ttk.Label(center, text="拖动模块调整位置 · 拖动空白平移 · 滚轮缩放", foreground="#94a3b8", font=("Microsoft YaHei UI", 9)).pack(anchor="w", pady=(0, 10))
+        ttk.Label(center, text="拖动模块调整位置 · 拖动空白平移 · 滚轮缩放 · 右键模块可删除", foreground="#94a3b8", font=("Microsoft YaHei UI", 9)).pack(anchor="w", pady=(0, 10))
 
         detail_header = ttk.Frame(right)
         detail_header.pack(fill="x", pady=(0, 10))
@@ -268,10 +285,14 @@ class LearningMap(tk.Tk):
         self.store.close()
         self.store = next_store
         self.map_id = map_id
+        self.kind_colors = self.library.kind_colors(map_id)
+        self.border_width = self.library.border_width(map_id)
         self.selected = None
         self.loaded_form = None
         self.undo_stack = []
         self.drag = None
+        self.guides = []
+        self.menu_request = None
         self.scale_factor, self.offset_x, self.offset_y = 1.0, 30.0, 60.0
         self.refresh_map_picker()
         self.clear_filters()
@@ -312,6 +333,16 @@ class LearningMap(tk.Tk):
     def change_theme(self, event=None):
         self.library.set_theme(self.map_id, self.theme.get())
         self.draw()
+
+    def edit_appearance(self):
+        def update(colors, border):
+            self.library.set_kind_colors(self.map_id, colors)
+            self.library.set_border_width(self.map_id, border)
+            self.kind_colors = self.library.kind_colors(self.map_id)
+            self.border_width = self.library.border_width(self.map_id)
+            self.draw()
+            self.status.set("已更新模块外观，只影响当前地图。")
+        return AppearanceDialog(self, update, self.kind_colors, self.border_width, DEFAULT_COLORS, DEFAULT_BORDER)
 
     @staticmethod
     def text_area(parent, height, expand=False):
@@ -455,7 +486,7 @@ class LearningMap(tk.Tk):
             self.status.set("已保存到地图：" + self.store.node(nid)["title"])
 
         candidates = [n for n in self.store.nodes() if not anchor or n["id"] != anchor["id"]]
-        return ContentDialog(self, commit, relative=relative, anchor=anchor, candidates=candidates)
+        return ContentDialog(self, commit, relative=relative, anchor=anchor, candidates=candidates, colors=self.kind_colors)
 
     def edit_node(self, event=None):
         if not self.selected:
@@ -468,7 +499,7 @@ class LearningMap(tk.Tk):
             self.store.update_node(node_id, **data)
             self.refresh()
             self.status.set("内容与笔记已更新。")
-        return ContentDialog(self, commit, node=self.store.node(node_id))
+        return ContentDialog(self, commit, node=self.store.node(node_id), colors=self.kind_colors)
 
     def relation_dialog(self):
         if not self.ensure_saved():
@@ -622,6 +653,13 @@ class LearningMap(tk.Tk):
         if self._draw_job is None:
             self._draw_job = self.after(16, self.draw)
 
+    def destroy(self):
+        # A pending redraw must not fire once the interpreter is torn down.
+        if self._draw_job is not None:
+            self.after_cancel(self._draw_job)
+            self._draw_job = None
+        super().destroy()
+
     def draw(self):
         if self._draw_job is not None:
             self.after_cancel(self._draw_job)
@@ -674,7 +712,7 @@ class LearningMap(tk.Tk):
                 # Canonical direction keeps opposite arrows on distinct curves.
                 sign = 1 if edge["source"] < edge["target"] else -1
                 mid = ((start[0] + end[0]) / 2 - dy / length * bend * sign, (start[1] + end[1]) / 2 + dx / length * bend * sign)
-                color = {"前置依赖": "#9badc8", "进阶延伸": "#b69bff", "相关内容": "#52cdb7"}[edge["kind"]] if dark else EDGE_COLORS[edge["kind"]]
+                color = (EDGE_COLORS_DARK if dark else EDGE_COLORS)[edge["kind"]]
                 options = dict(fill=color, width=max(1, 1.8 * s), arrow="none" if edge["kind"] == "相关内容" else "last", arrowshape=(9, 11, 4), smooth=True)
                 if edge["kind"] != "前置依赖":
                     options["dash"] = (7, 4) if edge["kind"] == "进阶延伸" else (2, 5)
@@ -684,17 +722,31 @@ class LearningMap(tk.Tk):
             if nid not in self.visible:
                 continue
             x, y = self.transform(*self.positions[nid])
-            w, h = 100 * s, 44 * s
-            fill, accent = COLORS[node["state"]]
+            w, h = NODE_HALF_WIDTH * s, NODE_HALF_HEIGHT * s
             tag = f"node:{nid}"
+            kind_color = self.kind_colors.get(node["kind"], STATE_COLORS["未开始"])
             if dark:
-                accent = {"未开始": "#adbed5", "学习中": "#8ab5ff", "已完成": "#65dab9"}[node["state"]]
+                kind_color = lighten(kind_color, .35)
+            state_color = (STATE_COLORS_DARK if dark else STATE_COLORS)[node["state"]]
             self.rounded_rect(x - w + 2, y - h + 5, x + w + 2, y + h + 5, 12 * s, fill=shadow, outline="", tags=tag)
-            self.rounded_rect(x - w, y - h, x + w, y + h, 12 * s, fill=card, outline="#6296ff" if nid == self.selected else grid, width=2 if nid == self.selected else 1, tags=tag)
-            self.canvas.create_oval(x - w + 13*s, y + 23*s, x - w + 19*s, y + 29*s, fill=accent, outline="", tags=tag)
+            border = max(1.5, self.border_width * s)
+            if nid == self.selected:
+                # Selection is a ring outside the card, so the type colour stays readable.
+                self.rounded_rect(x - w - 5 * s, y - h - 5 * s, x + w + 5 * s, y + h + 5 * s, 15 * s,
+                                  fill="", outline="#6296ff", width=max(1.5, border * .8), tags=tag)
+            self.rounded_rect(x - w, y - h, x + w, y + h, 12 * s, fill=card, outline=kind_color,
+                              width=border, tags=tag)
+            self.canvas.create_oval(x - w + 13*s, y + 23*s, x - w + 19*s, y + 29*s, fill=state_color, outline="", tags=tag)
             title = node["title"] if len(node["title"]) <= 24 else node["title"][:23] + "…"
             self.canvas.create_text(x, y - 11 * s, text=title, width=180 * s, font=("Microsoft YaHei UI", max(7, round(11 * s)), "bold"), fill="#edf3ff" if dark else "#1e293b", tags=tag)
-            self.canvas.create_text(x, y + 26 * s, text=f"{node['kind']}  ·  {node['state']}", font=("Microsoft YaHei UI", max(6, round(9 * s))), fill=accent, tags=tag)
+            self.canvas.create_text(x, y + 26 * s, text=f"{node['kind']}  ·  {node['state']}", font=("Microsoft YaHei UI", max(6, round(9 * s))), fill=kind_color, tags=tag)
+        for axis, value in self.guides:
+            if axis == "v":
+                position = value * s + self.offset_x
+                self.canvas.create_line(position, 0, position, height, fill=GUIDE_COLOR, dash=(4, 4), tags="guide")
+            else:
+                position = value * s + self.offset_y
+                self.canvas.create_line(0, position, width, position, fill=GUIDE_COLOR, dash=(4, 4), tags="guide")
         self.rounded_rect(10, 10, 132, 38, 8, fill=card, outline=grid)
         self.canvas.create_text(22, 24, anchor="w", text=f"{round(s * 100)}%  ·  {len(self.visible)} 个模块", fill=muted, font=("Microsoft YaHei UI", 9))
 
@@ -703,30 +755,101 @@ class LearningMap(tk.Tk):
         points = [x1+r,y1, x2-r,y1, x2,y1, x2,y1+r, x2,y2-r, x2,y2, x2-r,y2, x1+r,y2, x1,y2, x1,y2-r, x1,y1+r, x1,y1]
         return self.canvas.create_polygon(points, smooth=True, splinesteps=20, **options)
 
+    def node_under(self, event):
+        """Topmost module at a canvas position, found by geometry instead of hover state."""
+        for item in reversed(self.canvas.find_overlapping(event.x - 1, event.y - 1, event.x + 1, event.y + 1)):
+            tag = next((name for name in self.canvas.gettags(item) if name.startswith("node:")), None)
+            if tag:
+                return int(tag.split(":")[1])
+        return None
+
     def canvas_press(self, event):
         current = self.canvas.find_withtag("current")
         tags = self.canvas.gettags(current[0]) if current else ()
         if "empty-action" in tags:
             self.clear_filters() if self.positions else self.new_node()
             return
-        node_tag = next((tag for tag in tags if tag.startswith("node:")), None)
-        if node_tag:
-            nid = int(node_tag.split(":")[1])
-            if self.select(nid):
-                self.drag = ("node", nid, event.x, event.y, *self.positions[nid])
-        else:
+        node_id = self.node_under(event)
+        if node_id is None:
             self.pan_press(event)
+        elif self.select(node_id):
+            self.drag = ("node", node_id, event.x, event.y, *self.positions[node_id])
+
+    def canvas_press_right(self, event):
+        # Right-dragging empty canvas still pans; right-clicking a module opens its menu.
+        node_id = self.node_under(event)
+        if node_id is None:
+            self.pan_press(event)
+        else:
+            self.menu_request = (node_id, event.x_root, event.y_root, event.x, event.y)
+
+    def canvas_release_right(self, event):
+        request, self.menu_request = self.menu_request, None
+        self.drag = None
+        self.canvas.configure(cursor="")
+        if request and abs(event.x - request[3]) <= 4 and abs(event.y - request[4]) <= 4:
+            self.open_node_menu(request[0], request[1], request[2])
+
+    def node_menu(self):
+        menu = tk.Menu(self, tearoff=False, bg="white", fg="#334155", activebackground="#e9ecff",
+                       activeforeground="#5865d8", font=("Microsoft YaHei UI", 10))
+        menu.add_command(label="完整编辑", command=self.edit_node)
+        menu.add_command(label="＋ 补充前置", command=lambda: self.new_node("before"))
+        menu.add_command(label="＋ 继续延伸", command=lambda: self.new_node("after"))
+        menu.add_separator()
+        menu.add_command(label="删除这个模块", command=self.delete_node)
+        return menu
+
+    def open_node_menu(self, node_id, x_root, y_root):
+        if not self.select(node_id):
+            return
+        self.popup = self.node_menu()
+        try:
+            self.popup.tk_popup(x_root, y_root)
+        finally:
+            self.popup.grab_release()
+            self.popup = None
 
     def pan_press(self, event):
         self.drag = ("pan", None, event.x, event.y, self.offset_x, self.offset_y)
         self.canvas.configure(cursor="fleur")
+
+    def nearest_alignment(self, value, targets, offsets, tolerance):
+        """Best guide for one axis. Centre alignment wins over an edge at equal distance."""
+        best = None
+        for target in targets:
+            for offset in offsets:
+                distance = abs(value + offset - target)
+                rank = (round(distance, 6), abs(offset))
+                if distance <= tolerance and (best is None or rank < best[0]):
+                    best = (rank, target - offset, target)
+        return best
+
+    def snap_position(self, node_id, x, y):
+        """Align a dragged module with its neighbours and report the guides to draw."""
+        tolerance = GUIDE_TOLERANCE / self.scale_factor
+        columns, rows = [], []
+        for other, (ox, oy) in self.positions.items():
+            if other == node_id or other not in self.visible:
+                continue
+            columns += [ox - NODE_HALF_WIDTH, ox, ox + NODE_HALF_WIDTH]
+            rows += [oy - NODE_HALF_HEIGHT, oy, oy + NODE_HALF_HEIGHT]
+        guides = []
+        hit = self.nearest_alignment(x, columns, (-NODE_HALF_WIDTH, 0, NODE_HALF_WIDTH), tolerance)
+        if hit:
+            x, guides = hit[1], guides + [("v", hit[2])]
+        hit = self.nearest_alignment(y, rows, (-NODE_HALF_HEIGHT, 0, NODE_HALF_HEIGHT), tolerance)
+        if hit:
+            y, guides = hit[1], guides + [("h", hit[2])]
+        return (x, y), guides
 
     def canvas_motion(self, event):
         if not self.drag:
             return
         kind, nid, sx, sy, x, y = self.drag
         if kind == "node":
-            self.positions[nid] = (x + (event.x - sx) / self.scale_factor, y + (event.y - sy) / self.scale_factor)
+            moved = (x + (event.x - sx) / self.scale_factor, y + (event.y - sy) / self.scale_factor)
+            self.positions[nid], self.guides = self.snap_position(nid, *moved)
         else:
             self.offset_x, self.offset_y = x + event.x - sx, y + event.y - sy
         self.request_draw()
@@ -735,6 +858,8 @@ class LearningMap(tk.Tk):
         if self.drag and self.drag[0] == "node":
             nid = self.drag[1]
             self.store.set_positions({nid: self.positions[nid]})
+            self.guides = []
+            self.request_draw()
         self.drag = None
         self.canvas.configure(cursor="")
 

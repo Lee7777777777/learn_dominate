@@ -5,6 +5,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from app import LearningMap
+from library import DEFAULT_BORDER, DEFAULT_COLORS
+from storage import KINDS
 from test_support import TestDirectory
 
 
@@ -218,6 +220,151 @@ class UITests(unittest.TestCase):
                     app.change_theme()
                     app.zoom(SimpleNamespace(x=100, y=100, delta=120))
                     self.assertTrue(app.canvas.find_withtag("background"))
+            finally:
+                app.store.close()
+                app.library.close()
+                app.destroy()
+
+
+    def test_right_click_menu_on_module_and_pan_on_empty_canvas(self):
+        with TestDirectory() as directory:
+            app = LearningMap(Path(directory) / "menu.db")
+            try:
+                app.update()
+                app.demo()
+                app.update()
+                target = app.store.nodes()[2]["id"]
+                self.assertEqual(app.node_under(SimpleNamespace(x=3, y=3)), None)
+                x, y = app.transform(*app.positions[target])
+                self.assertEqual(app.node_under(SimpleNamespace(x=x, y=y)), target)
+                with patch.object(app, "open_node_menu") as opened:
+                    # A right click on a module records the target for the release handler.
+                    app.canvas_press_right(SimpleNamespace(x=x, y=y, x_root=11, y_root=22))
+                    self.assertEqual(app.menu_request[0], target)
+                    self.assertIsNone(app.drag)
+                    # Releasing without moving opens the menu at the pointer position.
+                    app.canvas_release_right(SimpleNamespace(x=x + 2, y=y - 1))
+                    self.assertEqual(opened.call_args[0], (target, 11, 22))
+                    self.assertIsNone(app.menu_request)
+                    # A right drag across the canvas is still a pan, not a menu.
+                    app.canvas_press_right(SimpleNamespace(x=x, y=y, x_root=11, y_root=22))
+                    app.canvas_release_right(SimpleNamespace(x=x + 60, y=y))
+                    self.assertEqual(opened.call_count, 1)
+                app.canvas_press_right(SimpleNamespace(x=3, y=3, x_root=0, y_root=0))
+                self.assertIsNone(app.menu_request)
+                self.assertEqual(app.drag[0], "pan")
+                app.canvas_release_right(SimpleNamespace(x=3, y=3))
+                # The menu offers deletion, and running it removes the module.
+                app.select(target)
+                menu = app.node_menu()
+                labels = [menu.entrycget(index, "label") if menu.type(index) != "separator" else ""
+                          for index in range(menu.index("end") + 1)]
+                self.assertIn("删除这个模块", labels)
+                delete_index = labels.index("删除这个模块")
+                self.assertEqual(menu.type(delete_index), "command")
+                with patch("app.messagebox.askyesno", return_value=True):
+                    menu.invoke(delete_index)
+                self.assertNotIn(target, [node["id"] for node in app.store.nodes()])
+                # 注意力机制 carried a→c, b→c and c→d; all three cascade away.
+                self.assertEqual(len(app.store.edges()), 3)
+            finally:
+                app.store.close()
+                app.library.close()
+                app.destroy()
+
+    def test_dragging_snaps_to_neighbours_and_shows_guides(self):
+        with TestDirectory() as directory:
+            app = LearningMap(Path(directory) / "guides.db")
+            try:
+                app.update()
+                app.demo()
+                app.update()
+                anchor, moving = app.store.nodes()[0]["id"], app.store.nodes()[1]["id"]
+                # 线性代数 and 概率基础 share a column in the automatic layout.
+                self.assertEqual(app.positions[anchor][0], app.positions[moving][0])
+                # At 100% one world unit is one pixel, so the 7 unit tolerance is unambiguous.
+                app.scale_factor = 1.0
+                self.assertEqual(app.snap_position(moving, 135, 240), ((130, 240), [("v", 130)]))
+                self.assertEqual(app.snap_position(moving, 630, 240), ((630, 240), []))
+                app.select(moving)
+                app.drag = ("node", moving, 0, 0, *app.positions[moving])
+                app.canvas_motion(SimpleNamespace(x=4, y=0))
+                self.assertEqual(app.positions[moving][0], app.positions[anchor][0])
+                self.assertEqual(app.guides, [("v", app.positions[anchor][0])])
+                app.draw()
+                self.assertTrue(app.canvas.find_withtag("guide"))
+                app.canvas_release(None)
+                self.assertEqual(app.guides, [])
+                app.draw()
+                self.assertFalse(app.canvas.find_withtag("guide"))
+                self.assertEqual(app.store.node(moving)["x"], app.store.node(anchor)["x"])
+            finally:
+                app.store.close()
+                app.library.close()
+                app.destroy()
+
+    def test_appearance_settings_apply_and_persist_per_map(self):
+        with TestDirectory() as directory:
+            app = LearningMap(Path(directory) / "appearance.db")
+            try:
+                app.update()
+                app.demo()
+                app.update()
+                dialog = app.edit_appearance()
+                self.assertEqual(dialog.selected, DEFAULT_COLORS)
+                self.assertEqual(dialog.border_value(), DEFAULT_BORDER)
+                self.assertEqual(dialog.values(), dialog.initial)
+                dialog.selected["论文"] = "#FF0000"
+                dialog.border.set(4.1)
+                dialog.repaint()
+                self.assertEqual(dialog.border_value(), 4.0)
+                self.assertEqual(dialog.border_label.cget("text"), "4 px")
+                self.assertNotEqual(dialog.values(), dialog.initial)
+                dialog.submit()
+                self.assertEqual(app.kind_colors["论文"], "#ff0000")
+                self.assertEqual(app.border_width, 4.0)
+                paper = next(node for node in app.store.nodes() if node["kind"] == "论文")
+                app.scale_factor = 1.0
+                app.draw()
+                def outlines(node_id):
+                    return {app.canvas.itemcget(item, "outline").lower()
+                            for item in app.canvas.find_withtag(f"node:{node_id}")
+                            if app.canvas.type(item) == "polygon"}
+                def border_width(node_id, color):
+                    return {app.canvas.itemcget(item, "width")
+                            for item in app.canvas.find_withtag(f"node:{node_id}")
+                            if app.canvas.type(item) == "polygon"
+                            and app.canvas.itemcget(item, "outline").lower() == color}
+                self.assertIn("#ff0000", outlines(paper["id"]))
+                self.assertEqual(border_width(paper["id"], "#ff0000"), {"4.0"})
+                # Selecting keeps the type colour and adds a ring outside the card instead.
+                app.select(paper["id"])
+                app.draw()
+                self.assertIn("#ff0000", outlines(paper["id"]))
+                self.assertIn("#6296ff", outlines(paper["id"]))
+                self.assertEqual(border_width(paper["id"], "#ff0000"), {"4.0"})
+                # The border follows the zoom exactly as the user set it at 100%.
+                app.zoom(SimpleNamespace(x=0, y=0, delta=-120))
+                app.draw()
+                self.assertLess(float(border_width(paper["id"], "#ff0000").pop()), 4.0)
+                app.fit()
+                reopened = app.edit_appearance()
+                self.assertEqual(reopened.selected["论文"], "#ff0000")
+                self.assertEqual(reopened.border_value(), 4.0)
+                reopened.reset()
+                self.assertEqual(reopened.selected, DEFAULT_COLORS)
+                self.assertEqual(reopened.border_value(), DEFAULT_BORDER)
+                reopened.destroy()
+                other = app.library.create("外观独立的地图")
+                self.assertEqual(app.library.kind_colors(other), DEFAULT_COLORS)
+                self.assertEqual(app.library.border_width(other), DEFAULT_BORDER)
+                app.open_map(other)
+                self.assertEqual(app.kind_colors, DEFAULT_COLORS)
+                self.assertEqual(app.border_width, DEFAULT_BORDER)
+                app.open_map("default")
+                self.assertEqual(app.kind_colors["论文"], "#ff0000")
+                self.assertEqual(app.border_width, 4.0)
+                self.assertEqual(len([node for node in app.store.nodes() if node["kind"] == "论文"]), 2)
             finally:
                 app.store.close()
                 app.library.close()
