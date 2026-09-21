@@ -9,12 +9,13 @@ import webbrowser
 import tkinter as tk
 from datetime import datetime
 from pathlib import Path
-from tkinter import filedialog, messagebox, simpledialog, ttk
+from tkinter import filedialog, messagebox, ttk
 
 from storage import KINDS, MASTERY, RELATIONS, STATES, Store
 from library import MapLibrary, THEMES
 from runtime import RELEASE_URL, prepare_data_dir
 from version import __version__
+from dialogs import ContentDialog, MapDialog, RelationDialog, SoftButton, bind_form_scroll
 
 BASE = Path(__file__).resolve().parent
 COLORS = {"未开始": ("#f1f5f9", "#64748b"), "学习中": ("#eff6ff", "#2563eb"), "已完成": ("#ecfdf5", "#059669")}
@@ -45,6 +46,8 @@ class LearningMap(tk.Tk):
         self.drag = None
         self.positions = {}
         self.visible = set()
+        self.graph_nodes, self.graph_edges = [], []
+        self._draw_job = None
         self._build_ui()
         self.refresh_map_picker()
         self.bind("<Control-s>", lambda e: self.save())
@@ -63,20 +66,31 @@ class LearningMap(tk.Tk):
         style.configure("TButton", padding=(10, 6), background="#ffffff", foreground="#334155", borderwidth=0)
         style.map("TButton", background=[("active", "#e8eef8")])
         style.configure("TNotebook", background="#f5f7fb", borderwidth=0)
-        style.configure("TNotebook.Tab", padding=(8, 8), background="#e9eef6", borderwidth=0)
-        style.map("TNotebook.Tab", background=[("selected", "#ffffff")], foreground=[("selected", "#2563eb")])
-        style.configure("Accent.TButton", background="#2563eb", foreground="white")
-        style.map("Accent.TButton", background=[("active", "#1d4ed8")])
-        style.configure("Treeview", rowheight=32, background="white", fieldbackground="white", borderwidth=0)
-        style.configure("Treeview.Heading", font=("Microsoft YaHei UI", 9))
-        style.map("Treeview", background=[("selected", "#dbeafe")], foreground=[("selected", "#1e40af")])
+        style.layout("TNotebook.Tab", [("Notebook.padding", {"children": [("Notebook.label", {"sticky": "nswe"})], "sticky": "nswe"})])
+        style.configure("TNotebook.Tab", padding=(10, 9), background="#eef0f7", borderwidth=0)
+        style.map("TNotebook.Tab", background=[("selected", "#ffffff")], foreground=[("selected", "#5865d8")])
+        style.configure("Accent.TButton", background="#5865d8", foreground="white")
+        style.map("Accent.TButton", background=[("active", "#4955c5")])
+        style.configure("TEntry", padding=7, fieldbackground="white", bordercolor="#e1e5ee", lightcolor="white", darkcolor="white")
+        style.map("TEntry", bordercolor=[("focus", "#5865d8")])
+        style.layout("Vertical.TScrollbar", [("Vertical.Scrollbar.trough", {"children": [("Vertical.Scrollbar.thumb", {"expand": "1", "sticky": "nswe"})], "sticky": "ns"})])
+        style.configure("Vertical.TScrollbar", width=9, arrowsize=0, background="#dce1ed", troughcolor="#f5f7fb", borderwidth=0, bordercolor="#f5f7fb", lightcolor="#dce1ed", darkcolor="#dce1ed")
+        style.configure("TCombobox", padding=6, fieldbackground="white", background="white", bordercolor="#e1e5ee", arrowcolor="#808aa0")
+        style.map("TCombobox", fieldbackground=[("readonly", "white")], selectbackground=[("readonly", "white")], selectforeground=[("readonly", "#334155")])
+        style.configure("TCheckbutton", background="white", foreground="#7b849b", font=("Microsoft YaHei UI", 9))
+        style.layout("Segment.TRadiobutton", [("Radiobutton.padding", {"children": [("Radiobutton.label", {"sticky": "nswe"})], "sticky": "nswe"})])
+        style.configure("Segment.TRadiobutton", padding=(10, 10), background="#f0f2f8", foreground="#7b849b", anchor="center", font=("Microsoft YaHei UI", 10))
+        style.map("Segment.TRadiobutton", background=[("selected", "#e5e8fc"), ("active", "#ebedf9")], foreground=[("selected", "#5865d8")])
+        style.configure("Treeview", rowheight=40, background="white", fieldbackground="white", borderwidth=0)
+        style.configure("Treeview.Heading", font=("Microsoft YaHei UI", 9), background="#f0f2f8", foreground="#7b849b", relief="flat", padding=(8, 8))
+        style.map("Treeview", background=[("selected", "#e9ecff")], foreground=[("selected", "#4e5aca")])
 
-        header = tk.Frame(self, bg="#12223b", height=76)
+        header = tk.Frame(self, bg="#ffffff", height=76)
         header.pack(fill="x")
-        tk.Label(header, text="知路", font=("Microsoft YaHei UI", 23, "bold"), fg="white", bg="#12223b").pack(side="left", padx=(22, 14), pady=10)
-        tk.Label(header, text="LEARNING MAP  /  把知识连成自己的学习路线", font=("Microsoft YaHei UI", 10), fg="#b6c6de", bg="#12223b").pack(side="left")
+        tk.Label(header, text="知路", font=("Microsoft YaHei UI", 24, "bold"), fg="#26304c", bg="white").pack(side="left", padx=(26, 14), pady=16)
+        tk.Label(header, text="把每一次理解，连成自己的知识地图。", font=("Microsoft YaHei UI", 10), fg="#8992a8", bg="white").pack(side="left")
         tk.Button(header, text=f"v{__version__}  ·  版本与更新", command=self.about,
-                  fg="#c4d5f0", bg="#12223b", activebackground="#233958", activeforeground="white",
+                  fg="#7b849b", bg="white", activebackground="#eef0f8", activeforeground="#5865d8",
                   relief="flat", bd=0, cursor="hand2", padx=12, pady=8).pack(side="right", padx=16)
 
         maps_bar = ttk.Frame(self, padding=(16, 10, 16, 0))
@@ -86,8 +100,8 @@ class LearningMap(tk.Tk):
         self.map_picker = ttk.Combobox(maps_bar, textvariable=self.map_name, state="readonly", width=24)
         self.map_picker.pack(side="left", padx=(0, 8))
         self.map_picker.bind("<<ComboboxSelected>>", self.switch_map)
-        ttk.Button(maps_bar, text="＋ 新建地图", command=self.new_map, style="Accent.TButton").pack(side="left", padx=(0, 8))
-        ttk.Button(maps_bar, text="重命名", command=self.rename_map).pack(side="left")
+        SoftButton(maps_bar, "＋ 新建地图", self.new_map, width=118).pack(side="left", padx=(0, 8))
+        ttk.Button(maps_bar, text="地图设置", command=self.rename_map).pack(side="left")
         self.theme = tk.StringVar(value=self.library.get(self.map_id)["theme"])
         theme_picker = ttk.Combobox(maps_bar, textvariable=self.theme, values=THEMES, state="readonly", width=11)
         theme_picker.pack(side="right")
@@ -96,10 +110,16 @@ class LearningMap(tk.Tk):
 
         bar = ttk.Frame(self, padding=(16, 10))
         bar.pack(fill="x")
-        for text, command, accent in (("＋ 新建模块", self.new_node, True), ("建立关系", self.relation_dialog, False), ("保存修改  Ctrl+S", self.save, False)):
-            ttk.Button(bar, text=text, command=command, style="Accent.TButton" if accent else "TButton").pack(side="left", padx=(0, 8))
-        for text, command in (("导出备份", self.export_file), ("导入地图", self.import_file), ("撤销删除 / 导入", self.undo)):
-            ttk.Button(bar, text=text, command=command).pack(side="right", padx=(8, 0))
+        for text, command, accent in (("＋ 添加内容", self.new_node, True), ("连接已有内容", self.relation_dialog, False), ("保存  Ctrl+S", self.save, False)):
+            SoftButton(bar, text, command, primary=accent).pack(side="left", padx=(0, 8))
+        operations = ttk.Menubutton(bar, text="地图操作  ▾")
+        menu = tk.Menu(operations, tearoff=False, bg="white", fg="#334155", activebackground="#e9ecff", activeforeground="#5865d8", font=("Microsoft YaHei UI", 10))
+        for text, command in (("导出当前地图", self.export_file), ("导入地图备份", self.import_file), ("撤销删除 / 导入", self.undo)):
+            menu.add_command(label=text, command=command)
+        operations.configure(menu=menu)
+        operations.pack(side="right")
+        self.progress_label = ttk.Label(bar, text="", foreground="#8992a8")
+        self.progress_label.pack(side="right", padx=20)
 
         self.status = tk.StringVar()
         ttk.Label(self, textvariable=self.status, padding=(18, 10), foreground="#64748b").pack(side="bottom", fill="x")
@@ -110,7 +130,7 @@ class LearningMap(tk.Tk):
         panes.add(center, weight=1)
         panes.add(right, weight=0)
 
-        ttk.Label(left, text="我的学习模块", font=("Microsoft YaHei UI", 12, "bold")).pack(anchor="w", pady=(0, 10))
+        ttk.Label(left, text="内容库", font=("Microsoft YaHei UI", 12, "bold")).pack(anchor="w", pady=(0, 10))
         self.query = tk.StringVar()
         self.search_entry = ttk.Entry(left, textvariable=self.query)
         self.search_entry.pack(fill="x", padx=(0, 8))
@@ -146,10 +166,11 @@ class LearningMap(tk.Tk):
         ttk.Checkbutton(graph_bar, text="聚焦当前模块", variable=self.focus_only, command=self.focus_changed).pack(side="left")
         self.canvas = tk.Canvas(center, background="#ffffff", highlightthickness=1, highlightbackground="#dce3ed")
         self.canvas.pack(fill="both", expand=True, padx=(0, 10))
-        self.canvas.bind("<Configure>", lambda e: self.draw())
+        self.canvas.bind("<Configure>", lambda e: self.request_draw())
         self.canvas.bind("<ButtonPress-1>", self.canvas_press)
         self.canvas.bind("<B1-Motion>", self.canvas_motion)
         self.canvas.bind("<ButtonRelease-1>", self.canvas_release)
+        self.canvas.bind("<Double-Button-1>", lambda e: self.edit_node() if any(t.startswith("node:") for t in self.canvas.gettags("current")) else None)
         self.canvas.bind("<ButtonPress-3>", self.pan_press)
         self.canvas.bind("<B3-Motion>", self.canvas_motion)
         self.canvas.bind("<ButtonRelease-3>", self.canvas_release)
@@ -159,8 +180,11 @@ class LearningMap(tk.Tk):
         ttk.Label(center, text="实线 → 前置依赖    紫虚线 → 进阶延伸    绿点线 — 相关内容", font=("Microsoft YaHei UI", 9)).pack(anchor="w", pady=(8, 2))
         ttk.Label(center, text="拖动模块调整位置 · 拖动空白平移 · 滚轮缩放", foreground="#94a3b8", font=("Microsoft YaHei UI", 9)).pack(anchor="w", pady=(0, 10))
 
-        self.detail_title = ttk.Label(right, text="模块详情", font=("Microsoft YaHei UI", 12, "bold"))
-        self.detail_title.pack(anchor="w", pady=(0, 10))
+        detail_header = ttk.Frame(right)
+        detail_header.pack(fill="x", pady=(0, 10))
+        self.detail_title = ttk.Label(detail_header, text="内容详情", font=("Microsoft YaHei UI", 12, "bold"))
+        self.detail_title.pack(side="left")
+        ttk.Button(detail_header, text="完整编辑 ↗", command=self.edit_node).pack(side="right")
         self.notebook = ttk.Notebook(right)
         info, writing, connections = (ttk.Frame(self.notebook, padding=12) for _ in range(3))
         # A scrollable inspector keeps all fields reachable on smaller displays.
@@ -187,6 +211,7 @@ class LearningMap(tk.Tk):
         self.summary = self.text_area(info, height=3)
         self.updated = ttk.Label(info, text="先从左侧选择或新建一个模块", foreground="#94a3b8", wraplength=280, font=("Microsoft YaHei UI", 9))
         self.updated.pack(anchor="w", pady=6)
+        bind_form_scroll(info, inspector)
         ttk.Label(writing, text="学习笔记 / 待解决问题").pack(anchor="w", pady=(0, 6))
         self.notes = self.text_area(writing, height=6, expand=True)
         ttk.Label(writing, text="参考资料（每行一个链接或文件路径）", wraplength=270).pack(anchor="w", pady=(14, 6))
@@ -203,8 +228,8 @@ class LearningMap(tk.Tk):
         actions = ttk.Frame(right)
         ttk.Button(right, text="删除当前模块", command=self.delete_node).pack(side="bottom", fill="x", pady=(0, 10))
         actions.pack(side="bottom", fill="x", pady=10)
-        ttk.Button(actions, text="＋ 前置模块", command=lambda: self.new_node("before")).pack(side="left", expand=True, fill="x", padx=(0, 5))
-        ttk.Button(actions, text="＋ 延伸模块", command=lambda: self.new_node("after")).pack(side="left", expand=True, fill="x")
+        SoftButton(actions, "＋ 补充前置", lambda: self.new_node("before"), width=135).pack(side="left", expand=True, fill="x", padx=(0, 5))
+        SoftButton(actions, "＋ 继续延伸", lambda: self.new_node("after"), width=135).pack(side="left", expand=True, fill="x")
         self.notebook.pack(fill="both", expand=True)
 
     def refresh_map_picker(self):
@@ -269,23 +294,20 @@ class LearningMap(tk.Tk):
     def new_map(self):
         if not self.ensure_saved():
             return
-        title = simpledialog.askstring("新建空白地图", "为新的学习地图命名：\n已有地图会保留，可随时切换回来。", parent=self)
-        if title is None:
-            return
-        try:
-            self.open_map(self.library.create(title))
-            self.status.set(f"已创建空白地图「{title.strip()}」，点击「新建模块」开始。")
-        except (OSError, ValueError) as error:
-            messagebox.showerror("新建失败", str(error), parent=self)
+        def create(title, theme):
+            map_id = self.library.create(title)
+            self.library.set_theme(map_id, theme)
+            self.open_map(map_id)
+            self.status.set(f"已创建「{title.strip()}」，添加第一个内容开始学习。")
+        return MapDialog(self, create)
 
     def rename_map(self):
-        title = simpledialog.askstring("重命名地图", "新的地图名称：", initialvalue=self.map_name.get(), parent=self)
-        if title is not None:
-            try:
-                self.library.rename(self.map_id, title)
-                self.refresh_map_picker()
-            except ValueError as error:
-                messagebox.showerror("重命名失败", str(error), parent=self)
+        def update(title, theme):
+            self.library.rename(self.map_id, title)
+            self.library.set_theme(self.map_id, theme)
+            self.refresh_map_picker()
+            self.draw()
+        return MapDialog(self, update, self.map_name.get(), self.theme.get(), rename=True)
 
     def change_theme(self, event=None):
         self.library.set_theme(self.map_id, self.theme.get())
@@ -336,6 +358,7 @@ class LearningMap(tk.Tk):
 
     def refresh_list_and_graph(self):
         nodes = self.store.nodes()
+        self.graph_nodes, self.graph_edges = nodes, self.store.edges()
         query = self.query.get().strip().casefold()
         filtered = [n for n in nodes if (not query or query in (n["title"] + " " + n["tags"] + " " + n["summary"]).casefold()) and (self.kind_filter.get() == "全部类型" or n["kind"] == self.kind_filter.get()) and (self.state_filter.get() == "全部状态" or n["state"] == self.state_filter.get())]
         self.node_list.delete(*self.node_list.get_children())
@@ -346,14 +369,15 @@ class LearningMap(tk.Tk):
         self.visible = {n["id"] for n in filtered}
         if self.focus_only.get() and self.selected:
             neighbors = {self.selected}
-            for edge in self.store.edges():
+            for edge in self.graph_edges:
                 if self.selected in (edge["source"], edge["target"]):
                     neighbors.update((edge["source"], edge["target"]))
             self.visible &= neighbors
         self.positions = {n["id"]: (n["x"], n["y"]) for n in nodes}
         self.draw()
         completed = sum(n["state"] == "已完成" for n in nodes)
-        self.status.set(f"{len(nodes)} 个模块 · {len(self.store.edges())} 条关系 · 已完成 {completed} 个 · 当前显示 {len(self.visible)} 个")
+        self.progress_label.configure(text=f"{len(nodes)} 个内容   /   已完成 {completed}")
+        self.status.set(f"{len(nodes)} 个模块 · {len(self.graph_edges)} 条关系 · 已完成 {completed} 个 · 当前显示 {len(self.visible)} 个")
 
     def load_detail(self):
         node = self.store.node(self.selected) if self.selected else None
@@ -366,8 +390,7 @@ class LearningMap(tk.Tk):
             text.insert("1.0", node[key] if node else "")
             text.edit_reset()
         self.loaded_form = self.form_data() if node else None
-        self.detail_title.configure(text="模块详情" if node else "选择一个模块开始")
-        self.updated.configure(text=f"最近保存：{node['updated_at'].replace('T', ' ')}" if node else "点击「新建模块」，或载入示例地图。")
+        self.updated.configure(text=f"最近保存：{node['updated_at'].replace('T', ' ')}" if node else "点击「添加内容」，或载入示例地图。")
         self.edge_list.delete(*self.edge_list.get_children())
         names = {n["id"]: n["title"] for n in self.store.nodes()}
         for edge in self.store.edges():
@@ -397,75 +420,67 @@ class LearningMap(tk.Tk):
 
     def new_node(self, relative=None):
         if relative and not self.selected:
-            self.status.set("先选择一个模块，再为它添加前置或延伸模块。")
+            self.status.set("先选择一个内容，再补充前置知识或继续延伸。")
             return
         if not self.ensure_saved():
             return
-        title = simpledialog.askstring("新建模块", "输入模块名称：", parent=self)
-        if title is None:
+        anchor = self.store.node(self.selected) if relative else None
+
+        def commit(data, existing, allow_duplicate):
+            if existing is not None:
+                if relative == "before":
+                    self.store.add_edge(existing, anchor["id"], "前置依赖")
+                else:
+                    self.store.add_edge(anchor["id"], existing, "进阶延伸")
+                nid = existing
+            else:
+                if not allow_duplicate and any(n["title"] == data["title"].strip() for n in self.store.nodes()):
+                    raise ValueError("已有同名内容。可复用已有内容，或勾选允许同名后创建。")
+                if anchor:
+                    x, y = self.positions[anchor["id"]]
+                    x += -270 if relative == "before" else 270
+                else:
+                    count = len(self.store.nodes())
+                    x, y = 130 + (count % 3) * 270, 100 + (count // 3) * 140
+                while any(abs(x-px) < 200 and abs(y-py) < 95 for px,py in self.positions.values()):
+                    y += 140
+                if anchor:
+                    nid = self.store.create_connected_node(anchor["id"], relative, **data, x=x, y=y)
+                else:
+                    nid = self.store.create_node(**data, x=x, y=y)
+            self.selected = nid
+            self.clear_filters()
+            self.load_detail()
+            self.fit()
+            self.status.set("已保存到地图：" + self.store.node(nid)["title"])
+
+        candidates = [n for n in self.store.nodes() if not anchor or n["id"] != anchor["id"]]
+        return ContentDialog(self, commit, relative=relative, anchor=anchor, candidates=candidates)
+
+    def edit_node(self, event=None):
+        if not self.selected:
+            self.status.set("先选择一个内容，再打开完整编辑器。")
             return
-        title = title.strip()
-        if not title:
-            messagebox.showerror("名称为空", "请输入模块名称。", parent=self)
+        if not self.ensure_saved():
             return
-        if any(n["title"] == title for n in self.store.nodes()):
-            if not messagebox.askyesno("发现同名模块", "已有同名模块，可通过「建立关系」复用它。仍要创建一个新的同名模块吗？", parent=self):
-                return
-        old = self.selected
-        if relative:
-            x, y = self.positions[old]
-            x += -270 if relative == "before" else 270
-            occupied = list(self.positions.values())
-            while any(abs(x - px) < 200 and abs(y - py) < 95 for px, py in occupied):
-                y += 140
-        else:
-            count = len(self.store.nodes())
-            x, y = 130 + (count % 3) * 270, 100 + (count // 3) * 140
-        nid = self.store.create_node(title, x=x, y=y)
-        if relative == "before":
-            self.store.add_edge(nid, old, "前置依赖")
-        elif relative == "after":
-            self.store.add_edge(old, nid, "进阶延伸")
-        self.selected = nid
-        self.clear_filters()
-        self.load_detail()
-        self.fit()
+        node_id = self.selected
+        def commit(data, existing, allow_duplicate):
+            self.store.update_node(node_id, **data)
+            self.refresh()
+            self.status.set("内容与笔记已更新。")
+        return ContentDialog(self, commit, node=self.store.node(node_id))
 
     def relation_dialog(self):
         if not self.ensure_saved():
             return
         nodes = self.store.nodes()
         if len(nodes) < 2:
-            messagebox.showinfo("建立关系", "请先创建至少两个模块。", parent=self)
+            self.status.set("先添加至少两个内容，就可以建立连接。")
             return
-        dialog = tk.Toplevel(self)
-        dialog.title("建立模块关系")
-        dialog.geometry("480x340")
-        dialog.resizable(False, False)
-        dialog.transient(self)
-        dialog.grab_set()
-        frame = ttk.Frame(dialog, padding=24)
-        frame.pack(fill="both", expand=True)
-        labels = {f"{n['title']}  [#{n['id']}]": n["id"] for n in nodes}
-        values = list(labels)
-        selected_index = next((i for i, n in enumerate(nodes) if n["id"] == self.selected), 0)
-        source = tk.StringVar(value=values[selected_index])
-        target = tk.StringVar(value=values[(selected_index + 1) % len(values)])
-        kind = tk.StringVar(value=RELATIONS[0])
-        for title, var, options in (("起点模块 A", source, values), ("关系类型", kind, RELATIONS), ("终点模块 B", target, values)):
-            ttk.Label(frame, text=title).pack(anchor="w", pady=(0, 4))
-            ttk.Combobox(frame, textvariable=var, values=options, state="readonly").pack(fill="x", pady=(0, 10))
-        ttk.Label(frame, text="前置依赖：A 是学习 B 的前提。\n进阶延伸：学完 A 可以继续学 B。", foreground="#64748b").pack(anchor="w")
-
-        def commit():
-            try:
-                self.store.add_edge(labels[source.get()], labels[target.get()], kind.get())
-            except ValueError as error:
-                messagebox.showerror("无法建立关系", str(error), parent=dialog)
-                return
-            dialog.destroy()
+        def commit(source, target, kind):
+            self.store.add_edge(source, target, kind)
             self.refresh()
-        ttk.Button(frame, text="建立关系", style="Accent.TButton", command=commit).pack(anchor="e", pady=(10, 0))
+        return RelationDialog(self, nodes, self.selected, commit)
 
     def remember(self):
         self.undo_stack.append(self.store.snapshot())
@@ -603,7 +618,14 @@ class LearningMap(tk.Tk):
         self.offset_y = height / 2 - (y1 + y2) / 2 * self.scale_factor
         self.draw()
 
+    def request_draw(self):
+        if self._draw_job is None:
+            self._draw_job = self.after(16, self.draw)
+
     def draw(self):
+        if self._draw_job is not None:
+            self.after_cancel(self._draw_job)
+            self._draw_job = None
         self.canvas.delete("all")
         s = self.scale_factor
         bg, grid, muted, card, shadow = BACKGROUNDS[self.theme.get()]
@@ -633,7 +655,7 @@ class LearningMap(tk.Tk):
             self.rounded_rect(cx - 85, cy + 40, cx + 85, cy + 78, 10, fill="#2563eb", outline="", tags="empty-action")
             self.canvas.create_text(cx, cy + 59, text="清除筛选" if has_nodes else "＋ 添加第一个模块", fill="white", font=("Microsoft YaHei UI", 10), tags="empty-action")
             return
-        edges = [e for e in self.store.edges() if e["source"] in self.visible and e["target"] in self.visible]
+        edges = [e for e in self.graph_edges if e["source"] in self.visible and e["target"] in self.visible]
         groups = {}
         for edge in edges:
             groups.setdefault(tuple(sorted((edge["source"], edge["target"]))), []).append(edge)
@@ -657,7 +679,7 @@ class LearningMap(tk.Tk):
                 if edge["kind"] != "前置依赖":
                     options["dash"] = (7, 4) if edge["kind"] == "进阶延伸" else (2, 5)
                 self.canvas.create_line(*start, *mid, *end, **options)
-        for node in self.store.nodes():
+        for node in self.graph_nodes:
             nid = node["id"]
             if nid not in self.visible:
                 continue
@@ -707,7 +729,7 @@ class LearningMap(tk.Tk):
             self.positions[nid] = (x + (event.x - sx) / self.scale_factor, y + (event.y - sy) / self.scale_factor)
         else:
             self.offset_x, self.offset_y = x + event.x - sx, y + event.y - sy
-        self.draw()
+        self.request_draw()
 
     def canvas_release(self, event):
         if self.drag and self.drag[0] == "node":
@@ -725,7 +747,7 @@ class LearningMap(tk.Tk):
         self.offset_x = event.x - (event.x - self.offset_x) * ratio
         self.offset_y = event.y - (event.y - self.offset_y) * ratio
         self.scale_factor = new_scale
-        self.draw()
+        self.request_draw()
 
     def report_callback_exception(self, exc, value, traceback):
         import logging
@@ -757,8 +779,15 @@ def main():
         app.store.seed_demo()
         app.refresh()
         app.update()
+        app.select(app.store.nodes()[0]["id"])
+        editor = app.edit_node()
+        editor.update()
+        editor_visible = bool(editor.winfo_viewable())
+        editor.texts["notes"].insert("end", "Packaged editor verification")
+        editor.submit()
         result = {"version": __version__, "visible": bool(app.winfo_viewable()),
-                  "console": ctypes.windll.kernel32.GetConsoleWindow(), "nodes": len(app.store.nodes())}
+                  "console": ctypes.windll.kernel32.GetConsoleWindow(), "nodes": len(app.store.nodes()),
+                  "editor": editor_visible and "Packaged editor verification" in app.store.node(app.selected)["notes"]}
         app.close()
         args.smoke_test.write_text(json.dumps(result), encoding="utf-8")
         return

@@ -67,7 +67,7 @@ def main():
         marker = Path(temp) / 'result.json'
         subprocess.run([str(executable), '--db', str(Path(temp) / 'smoke.db'), '--smoke-test', str(marker)], check=True, timeout=90)
         result = json.loads(marker.read_text(encoding='utf-8'))
-        expected = dict(version=__version__, visible=True, console=0, nodes=6)
+        expected = dict(version=__version__, visible=True, console=0, nodes=6, editor=True)
         if result != expected:
             raise RuntimeError(f'Packaged app smoke test failed: {result}')
     archive = output / (name + '.zip')

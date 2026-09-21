@@ -8,6 +8,15 @@ from test_support import TestDirectory
 
 
 class StoreTests(unittest.TestCase):
+    def test_create_connected_node_rolls_back_on_connection_failure(self):
+        anchor = self.store.create_node("目标")
+        self.store.db.execute("CREATE TRIGGER reject_edges BEFORE INSERT ON edges BEGIN SELECT RAISE(ABORT, 'test failure'); END")
+        import sqlite3
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.store.create_connected_node(anchor, "before", "前置")
+        self.assertEqual(len(self.store.nodes()), 1)
+        self.assertEqual(self.store.edges(), [])
+
     def setUp(self):
         self.temp = TestDirectory()
         self.path = Path(self.temp.name) / "map.db"

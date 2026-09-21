@@ -63,17 +63,29 @@ class Store:
             if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or abs(value) > 1e7:
                 raise ValueError("节点位置无效或超出范围。")
 
-    def create_node(self, title, **values):
+    def _insert_node(self, title, **values):
         data = dict(title=title, kind=KINDS[0], state=STATES[0], mastery=MASTERY[0],
                     summary="", notes="", resources="", tags="", x=100, y=100)
         data.update(values)
         self.validate_node(data)
         data["title"] = data["title"].strip()
-        with self.db:
-            cur = self.db.execute(
-                f"INSERT INTO nodes ({','.join(NODE_FIELDS)},updated_at) VALUES ({','.join('?' for _ in range(11))})",
-                [data[k] for k in NODE_FIELDS] + [datetime.now().isoformat(timespec="seconds")])
+        cur = self.db.execute(
+            f"INSERT INTO nodes ({','.join(NODE_FIELDS)},updated_at) VALUES ({','.join('?' for _ in range(11))})",
+            [data[k] for k in NODE_FIELDS] + [datetime.now().isoformat(timespec="seconds")])
         return cur.lastrowid
+
+    def create_node(self, title, **values):
+        with self.db:
+            return self._insert_node(title, **values)
+
+    def create_connected_node(self, anchor, relative, title, **values):
+        if not self.node(anchor) or relative not in ("before", "after"):
+            raise ValueError("要补充的内容已不存在，请重新选择。")
+        with self.db:
+            nid = self._insert_node(title, **values)
+            source, target, kind = (nid, anchor, "前置依赖") if relative == "before" else (anchor, nid, "进阶延伸")
+            self.db.execute("INSERT INTO edges(source,target,kind) VALUES (?,?,?)", (source, target, kind))
+        return nid
 
     def update_node(self, node_id, **values):
         data = self.node(node_id)
