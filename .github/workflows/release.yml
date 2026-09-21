@@ -1,0 +1,59 @@
+name: Windows App Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.14'
+          architecture: x64
+      - name: Validate version
+        shell: pwsh
+        run: |
+          $version = python -c "from version import __version__; print(__version__)"
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -ne "v$version") { throw 'Tag and version.py must match' }
+      - name: Test application
+        run: python -m unittest test_storage test_library test_runtime test_ui test_launcher -v
+      - name: Install build tools
+        run: python -m pip install -r requirements-build.txt
+      - name: Build and smoke-test Windows EXE
+        run: python scripts/build_windows.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-release
+          path: dist/*/*
+          if-no-files-found: error
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-release
+          path: release-assets
+      - name: Publish versioned release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$RELEASE_TAG" $(find release-assets -type f) --verify-tag --title "知路 $RELEASE_TAG" --notes-file CHANGELOG.md

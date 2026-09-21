@@ -2,6 +2,14 @@
 
 一个用 Python 编写的本地学习辅助桌面应用。用知识点、论文、课程和实践模块构建学习网络，记录进度、笔记与参考资料。
 
+## 下载 Windows APP（无需 Python）
+
+在 [GitHub Releases](https://github.com/Lee7777777777/learn_dominate/releases/latest) 下载 `ZhiLu-版本号-Windows-x64.exe`，双击即可运行。也提供含说明文档的 ZIP 和 SHA256 校验文件。适用于 Windows 10/11 x64，目前为免安装版，未配置付费代码签名证书。
+
+打包版数据保存在 `%LOCALAPPDATA%\ZhiLu\data`。**更新时关闭 APP，下载并运行新版本 EXE，地图和笔记会继续保留。** 应用右上角「版本与更新」可查看版本、数据位置，并打开最新版本下载页；目前采用手动下载更新，不会在后台替换程序。
+
+旧源码版的 `data` 不会删除。第一次运行 EXE 时，如果 EXE 同目录或上一级目录存在旧版 `data/learning_map.db`，会把整个地图库复制到尚不存在的用户数据目录。本项目的 `dist/版本号/` 本地构建也能识别项目原有数据。已有用户数据目录时绝不覆盖；其他位置可先在源码版导出地图，再在打包版新建地图并导入。
+
 ## 启动
 
 需要 Python 3.10 或更新版本，并包含 Tkinter（Windows 官方 Python 安装器中的 Tcl/Tk 组件）。无需 pip 安装第三方库。
@@ -46,12 +54,36 @@ python app.py --db D:\MyLearning\map.db
 
 ## 当前范围
 
-这是可运行的桌面 APP，支持多张独立地图；不同地图之间的模块和笔记互不关联。模块类型可区分，但共用一套字段。暂不包含多地图共享模块、云同步、AI、自动复习、富文本编辑或可执行文件打包。地图适合个人中小规模知识网络；大量节点时建议筛选和聚焦查看。
+这是可运行的桌面 APP，支持多张独立地图；不同地图之间的模块和笔记互不关联。模块类型可区分，但共用一套字段。暂不包含多地图共享模块、云同步、AI、自动复习或富文本编辑。地图适合个人中小规模知识网络；大量节点时建议筛选和聚焦查看。
+
+## 版本发布流程
+
+版本号统一保存在 `version.py`，更新记录写入 `CHANGELOG.md`。每次完成一批修改后发布一个新版本，例如 `1.0.0 → 1.0.1`（修复）或 `1.1.0`（新增功能）。不是每次保存源码就发布。
+
+代码修改提交到 `main` 后，在项目目录执行：
+
+```powershell
+python scripts/release.py 1.0.1 --notes "本次更新的功能说明"
+```
+
+脚本会检查工作目录、版本号、远程分支和测试，提交版本号与更新日志，并原子推送 `main` 和 `v1.0.1` 标签。GitHub Actions 在收到 `v*` 标签后测试、打包、运行 EXE 验证，并创建对应 Release 和下载文件。手动运行 workflow 仅测试打包，不从未打标签的分支发布正式版。
+
+如推送失败，版本提交与标签会留在本地；解决网络或权限问题后运行 `git push --atomic origin main v1.0.1`，不要重复创建同名版本。构建失败可在 Actions 中查看日志并重试；已经发布的版本应通过新版本修复，保留历史下载。
+
+本地构建（Windows x64）：
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements-build.txt
+.\.venv\Scripts\python.exe scripts/build_windows.py
+```
+
+产物位于 `dist/版本号/`，不提交到源码仓库；GitHub Release 附件保存构建产物。用户数据库不会被打包。实现依据：[PyInstaller 打包选项](https://pyinstaller.org/en/stable/usage.html)、[GitHub Actions 工作流](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax)。
 
 ## 验证
 
 ```powershell
-python -m unittest test_storage test_library test_ui test_launcher -v
+python -m unittest test_storage test_library test_runtime test_ui test_launcher -v
 ```
 
 UI 测试会短暂打开真实 Tk 窗口，需要可用的桌面环境。所有测试都使用临时数据库，不改动学习数据。

@@ -4,6 +4,8 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import logging
+import webbrowser
 import tkinter as tk
 from datetime import datetime
 from pathlib import Path
@@ -11,6 +13,8 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from storage import KINDS, MASTERY, RELATIONS, STATES, Store
 from library import MapLibrary, THEMES
+from runtime import RELEASE_URL, prepare_data_dir
+from version import __version__
 
 BASE = Path(__file__).resolve().parent
 COLORS = {"未开始": ("#f1f5f9", "#64748b"), "学习中": ("#eff6ff", "#2563eb"), "已完成": ("#ecfdf5", "#059669")}
@@ -23,13 +27,15 @@ BACKGROUNDS = {
 
 
 class LearningMap(tk.Tk):
-    def __init__(self, database=BASE / "data" / "learning_map.db"):
+    def __init__(self, database=None):
         super().__init__()
         self.title("知路 · 学习地图")
         self.geometry("1440x900")
         self.minsize(1120, 780)
         self.configure(bg="#f5f7fb")
-        self.library = MapLibrary(database)
+        if (BASE / "app.ico").exists():
+            self.iconbitmap(str(BASE / "app.ico"))
+        self.library = MapLibrary(database or prepare_data_dir() / "learning_map.db")
         self.map_id = self.library.active_id
         self.store = Store(self.library.path(self.map_id))
         self.selected = None
@@ -69,7 +75,9 @@ class LearningMap(tk.Tk):
         header.pack(fill="x")
         tk.Label(header, text="知路", font=("Microsoft YaHei UI", 23, "bold"), fg="white", bg="#12223b").pack(side="left", padx=(22, 14), pady=10)
         tk.Label(header, text="LEARNING MAP  /  把知识连成自己的学习路线", font=("Microsoft YaHei UI", 10), fg="#b6c6de", bg="#12223b").pack(side="left")
-        tk.Label(header, text="本地存储 · 无需登录", fg="#94a8c4", bg="#12223b").pack(side="right", padx=24)
+        tk.Button(header, text=f"v{__version__}  ·  版本与更新", command=self.about,
+                  fg="#c4d5f0", bg="#12223b", activebackground="#233958", activeforeground="white",
+                  relief="flat", bd=0, cursor="hand2", padx=12, pady=8).pack(side="right", padx=16)
 
         maps_bar = ttk.Frame(self, padding=(16, 10, 16, 0))
         maps_bar.pack(fill="x")
@@ -205,7 +213,20 @@ class LearningMap(tk.Tk):
         current = self.library.get(self.map_id)
         self.map_name.set(current["title"])
         self.theme.set(current["theme"])
-        self.title(f"知路 · {current['title']}")
+        self.title(f"知路 v{__version__} · {current['title']}")
+
+    def about(self):
+        dialog = tk.Toplevel(self)
+        dialog.title("关于知路")
+        dialog.transient(self)
+        dialog.resizable(False, False)
+        frame = ttk.Frame(dialog, padding=24)
+        frame.pack(fill="both", expand=True)
+        ttk.Label(frame, text=f"知路  v{__version__}", font=("Microsoft YaHei UI", 18, "bold")).pack(anchor="w")
+        ttk.Label(frame, text="把知识连成自己的学习路线", foreground="#64748b").pack(anchor="w", pady=(6, 18))
+        ttk.Label(frame, text=f"学习数据保存在：\n{self.library.original.parent}", wraplength=420).pack(anchor="w")
+        ttk.Label(frame, text="更新方式：关闭应用，下载新版本 EXE 并替换程序。\n打包版的地图与笔记保存在独立目录，不会被覆盖。\n从其他电脑迁移时，先导出地图备份。", wraplength=420).pack(anchor="w", pady=16)
+        ttk.Button(frame, text="前往 GitHub 下载最新版本", command=lambda: webbrowser.open(RELEASE_URL)).pack(fill="x")
 
     def open_map(self, map_id):
         if map_id == self.map_id:
@@ -720,9 +741,27 @@ class LearningMap(tk.Tk):
 
 def main():
     parser = argparse.ArgumentParser(description="知路 · 本地学习地图")
-    parser.add_argument("--db", type=Path, default=BASE / "data" / "learning_map.db", help="指定 SQLite 数据文件")
+    parser.add_argument("--db", type=Path, help="指定 SQLite 数据文件")
+    parser.add_argument("--smoke-test", type=Path, help=argparse.SUPPRESS)
+    parser.add_argument("--version", action="version", version=__version__)
     args = parser.parse_args()
-    app = LearningMap(args.db)
+    if args.smoke_test and not args.db:
+        parser.error("--smoke-test requires an isolated --db")
+    database = args.db or prepare_data_dir() / "learning_map.db"
+    database.parent.mkdir(parents=True, exist_ok=True)
+    logging.basicConfig(filename=database.parent / "app.log", encoding="utf-8", level=logging.ERROR)
+    app = LearningMap(database)
+    if args.smoke_test:
+        import ctypes
+        app.update()
+        app.store.seed_demo()
+        app.refresh()
+        app.update()
+        result = {"version": __version__, "visible": bool(app.winfo_viewable()),
+                  "console": ctypes.windll.kernel32.GetConsoleWindow(), "nodes": len(app.store.nodes())}
+        app.close()
+        args.smoke_test.write_text(json.dumps(result), encoding="utf-8")
+        return
     app.mainloop()
 
 
