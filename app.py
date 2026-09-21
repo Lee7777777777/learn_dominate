@@ -10,10 +10,16 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from storage import KINDS, MASTERY, RELATIONS, STATES, Store
+from library import MapLibrary, THEMES
 
 BASE = Path(__file__).resolve().parent
 COLORS = {"未开始": ("#f1f5f9", "#64748b"), "学习中": ("#eff6ff", "#2563eb"), "已完成": ("#ecfdf5", "#059669")}
 EDGE_COLORS = {"前置依赖": "#64748b", "进阶延伸": "#8b5cf6", "相关内容": "#0d9488"}
+BACKGROUNDS = {
+    "晴空点阵": ("#f3f7fc", "#d4deec", "#526580", "#ffffff", "#e0e8f3"),
+    "暖纸网格": ("#faf7f0", "#e8e1d4", "#81705a", "#fffdf8", "#e8e0d1"),
+    "午夜星空": ("#182338", "#2d3d58", "#a5b8d6", "#25344e", "#111c2e"),
+}
 
 
 class LearningMap(tk.Tk):
@@ -21,9 +27,11 @@ class LearningMap(tk.Tk):
         super().__init__()
         self.title("知路 · 学习地图")
         self.geometry("1440x900")
-        self.minsize(1120, 740)
+        self.minsize(1120, 780)
         self.configure(bg="#f5f7fb")
-        self.store = Store(database)
+        self.library = MapLibrary(database)
+        self.map_id = self.library.active_id
+        self.store = Store(self.library.path(self.map_id))
         self.selected = None
         self.loaded_form = None
         self.undo_stack = []
@@ -32,6 +40,7 @@ class LearningMap(tk.Tk):
         self.positions = {}
         self.visible = set()
         self._build_ui()
+        self.refresh_map_picker()
         self.bind("<Control-s>", lambda e: self.save())
         self.bind("<Control-n>", lambda e: self.new_node())
         self.bind("<Control-f>", lambda e: self.search_entry.focus_set())
@@ -45,7 +54,11 @@ class LearningMap(tk.Tk):
         style.configure(".", font=("Microsoft YaHei UI", 10))
         style.configure("TFrame", background="#f5f7fb")
         style.configure("TLabel", background="#f5f7fb", foreground="#334155")
-        style.configure("TButton", padding=(10, 6))
+        style.configure("TButton", padding=(10, 6), background="#ffffff", foreground="#334155", borderwidth=0)
+        style.map("TButton", background=[("active", "#e8eef8")])
+        style.configure("TNotebook", background="#f5f7fb", borderwidth=0)
+        style.configure("TNotebook.Tab", padding=(8, 8), background="#e9eef6", borderwidth=0)
+        style.map("TNotebook.Tab", background=[("selected", "#ffffff")], foreground=[("selected", "#2563eb")])
         style.configure("Accent.TButton", background="#2563eb", foreground="white")
         style.map("Accent.TButton", background=[("active", "#1d4ed8")])
         style.configure("Treeview", rowheight=32, background="white", fieldbackground="white", borderwidth=0)
@@ -54,9 +67,24 @@ class LearningMap(tk.Tk):
 
         header = tk.Frame(self, bg="#12223b", height=76)
         header.pack(fill="x")
-        tk.Label(header, text="知路", font=("Microsoft YaHei UI", 23, "bold"), fg="white", bg="#12223b").pack(side="left", padx=(22, 14), pady=14)
+        tk.Label(header, text="知路", font=("Microsoft YaHei UI", 23, "bold"), fg="white", bg="#12223b").pack(side="left", padx=(22, 14), pady=10)
         tk.Label(header, text="LEARNING MAP  /  把知识连成自己的学习路线", font=("Microsoft YaHei UI", 10), fg="#b6c6de", bg="#12223b").pack(side="left")
         tk.Label(header, text="本地存储 · 无需登录", fg="#94a8c4", bg="#12223b").pack(side="right", padx=24)
+
+        maps_bar = ttk.Frame(self, padding=(16, 10, 16, 0))
+        maps_bar.pack(fill="x")
+        ttk.Label(maps_bar, text="学习空间", font=("Microsoft YaHei UI", 10, "bold")).pack(side="left", padx=(0, 12))
+        self.map_name = tk.StringVar()
+        self.map_picker = ttk.Combobox(maps_bar, textvariable=self.map_name, state="readonly", width=24)
+        self.map_picker.pack(side="left", padx=(0, 8))
+        self.map_picker.bind("<<ComboboxSelected>>", self.switch_map)
+        ttk.Button(maps_bar, text="＋ 新建地图", command=self.new_map, style="Accent.TButton").pack(side="left", padx=(0, 8))
+        ttk.Button(maps_bar, text="重命名", command=self.rename_map).pack(side="left")
+        self.theme = tk.StringVar(value=self.library.get(self.map_id)["theme"])
+        theme_picker = ttk.Combobox(maps_bar, textvariable=self.theme, values=THEMES, state="readonly", width=11)
+        theme_picker.pack(side="right")
+        theme_picker.bind("<<ComboboxSelected>>", self.change_theme)
+        ttk.Label(maps_bar, text="画布背景", foreground="#64748b").pack(side="right", padx=10)
 
         bar = ttk.Frame(self, padding=(16, 10))
         bar.pack(fill="x")
@@ -127,7 +155,19 @@ class LearningMap(tk.Tk):
         self.detail_title.pack(anchor="w", pady=(0, 10))
         self.notebook = ttk.Notebook(right)
         info, writing, connections = (ttk.Frame(self.notebook, padding=12) for _ in range(3))
-        self.notebook.add(info, text="基本信息")
+        # A scrollable inspector keeps all fields reachable on smaller displays.
+        info_page = info
+        info_page.configure(padding=0)
+        inspector = tk.Canvas(info_page, highlightthickness=0, background="#f5f7fb", width=280)
+        inspector_scroll = ttk.Scrollbar(info_page, command=inspector.yview)
+        inspector.configure(yscrollcommand=inspector_scroll.set)
+        inspector_scroll.pack(side="right", fill="y")
+        inspector.pack(side="left", fill="both", expand=True)
+        info = ttk.Frame(inspector, padding=12)
+        info_window = inspector.create_window(0, 0, window=info, anchor="nw")
+        info.bind("<Configure>", lambda e: inspector.configure(scrollregion=inspector.bbox("all")))
+        inspector.bind("<Configure>", lambda e: inspector.itemconfigure(info_window, width=e.width))
+        self.notebook.add(info_page, text="基本信息")
         self.notebook.add(writing, text="笔记 / 资料")
         self.notebook.add(connections, text="模块关系")
         self.form_vars = {k: tk.StringVar() for k in ("title", "kind", "state", "mastery", "tags")}
@@ -158,6 +198,77 @@ class LearningMap(tk.Tk):
         ttk.Button(actions, text="＋ 前置模块", command=lambda: self.new_node("before")).pack(side="left", expand=True, fill="x", padx=(0, 5))
         ttk.Button(actions, text="＋ 延伸模块", command=lambda: self.new_node("after")).pack(side="left", expand=True, fill="x")
         self.notebook.pack(fill="both", expand=True)
+
+    def refresh_map_picker(self):
+        self.map_choices = {m["title"]: m["id"] for m in self.library.maps()}
+        self.map_picker.configure(values=list(self.map_choices))
+        current = self.library.get(self.map_id)
+        self.map_name.set(current["title"])
+        self.theme.set(current["theme"])
+        self.title(f"知路 · {current['title']}")
+
+    def open_map(self, map_id):
+        if map_id == self.map_id:
+            return
+        path = self.library.path(map_id)
+        if not path.exists():
+            raise ValueError("地图文件不存在，请恢复备份后重试。")
+        next_store = Store(path)
+        try:
+            self.library.activate(map_id)
+        except Exception:
+            next_store.close()
+            raise
+        self.store.close()
+        self.store = next_store
+        self.map_id = map_id
+        self.selected = None
+        self.loaded_form = None
+        self.undo_stack = []
+        self.drag = None
+        self.scale_factor, self.offset_x, self.offset_y = 1.0, 30.0, 60.0
+        self.refresh_map_picker()
+        self.clear_filters()
+        self.load_detail()
+        self.fit()
+
+    def switch_map(self, event=None):
+        target = self.map_choices.get(self.map_name.get())
+        if target is None or target == self.map_id:
+            return
+        if not self.ensure_saved():
+            self.refresh_map_picker()
+            return
+        try:
+            self.open_map(target)
+        except (OSError, ValueError) as error:
+            self.refresh_map_picker()
+            messagebox.showerror("切换失败", str(error), parent=self)
+
+    def new_map(self):
+        if not self.ensure_saved():
+            return
+        title = simpledialog.askstring("新建空白地图", "为新的学习地图命名：\n已有地图会保留，可随时切换回来。", parent=self)
+        if title is None:
+            return
+        try:
+            self.open_map(self.library.create(title))
+            self.status.set(f"已创建空白地图「{title.strip()}」，点击「新建模块」开始。")
+        except (OSError, ValueError) as error:
+            messagebox.showerror("新建失败", str(error), parent=self)
+
+    def rename_map(self):
+        title = simpledialog.askstring("重命名地图", "新的地图名称：", initialvalue=self.map_name.get(), parent=self)
+        if title is not None:
+            try:
+                self.library.rename(self.map_id, title)
+                self.refresh_map_picker()
+            except ValueError as error:
+                messagebox.showerror("重命名失败", str(error), parent=self)
+
+    def change_theme(self, event=None):
+        self.library.set_theme(self.map_id, self.theme.get())
+        self.draw()
 
     @staticmethod
     def text_area(parent, height, expand=False):
@@ -397,7 +508,7 @@ class LearningMap(tk.Tk):
         self.fit()
 
     def backup(self):
-        folder = self.store.path.parent / "backups"
+        folder = self.library.original.parent / "backups" / self.map_id
         folder.mkdir(parents=True, exist_ok=True)
         path = folder / (datetime.now().strftime("%Y%m%d-%H%M%S-%f") + ".json")
         self.store.export(path)
@@ -409,8 +520,10 @@ class LearningMap(tk.Tk):
         path = filedialog.asksaveasfilename(parent=self, title="导出完整学习地图", defaultextension=".json", initialfile="学习地图.json", filetypes=[("学习地图 JSON", "*.json")])
         if path:
             try:
-                if Path(path).resolve() == self.store.path.resolve():
-                    raise ValueError("不能覆盖正在使用的数据库。")
+                reserved = {self.library.path(m['id']).resolve() for m in self.library.maps()}
+                reserved.add(self.library.original.with_suffix(".library.db"))
+                if Path(path).resolve() in reserved:
+                    raise ValueError("不能覆盖地图数据库或地图目录。")
                 self.store.export(path)
                 self.status.set("已导出完整地图：" + path)
             except (OSError, ValueError) as error:
@@ -427,7 +540,7 @@ class LearningMap(tk.Tk):
                 raise ValueError("导入文件超过 20 MB。")
             data = json.loads(Path(path).read_text(encoding="utf-8-sig"))
             Store.validate_snapshot(data)
-            if not messagebox.askyesno("替换当前地图", f"导入 {len(data['nodes'])} 个模块和 {len(data['edges'])} 条关系，替换当前地图？\n当前数据会先自动备份，也可撤销导入。", parent=self):
+            if not messagebox.askyesno("替换当前地图", f"导入 {len(data['nodes'])} 个模块和 {len(data['edges'])} 条关系，替换「{self.map_name.get()}」？\n其他地图不受影响。当前地图会先备份，也可撤销导入。", parent=self):
                 return
             self.backup()
             self.remember()
@@ -472,9 +585,32 @@ class LearningMap(tk.Tk):
     def draw(self):
         self.canvas.delete("all")
         s = self.scale_factor
+        bg, grid, muted, card, shadow = BACKGROUNDS[self.theme.get()]
+        dark = self.theme.get() == "午夜星空"
+        self.canvas.configure(background=bg)
+        width, height = self.canvas.winfo_width(), self.canvas.winfo_height()
+        # World-aligned texture, bounded density even when zoomed far out.
+        step = 28 * s
+        while step < 22:
+            step *= 2
+        if self.theme.get() == "暖纸网格":
+            for x in range(round(self.offset_x % step), width, max(1, round(step))):
+                self.canvas.create_line(x, 0, x, height, fill=grid, tags="background")
+            for y in range(round(self.offset_y % step), height, max(1, round(step))):
+                self.canvas.create_line(0, y, width, y, fill=grid, tags="background")
+        else:
+            for x in range(round(self.offset_x % step), width, max(1, round(step))):
+                for y in range(round(self.offset_y % step), height, max(1, round(step))):
+                    self.canvas.create_oval(x, y, x + 2, y + 2, fill=grid, outline="", tags="background")
         if not self.visible:
             has_nodes = bool(self.positions)
-            self.canvas.create_text(max(self.canvas.winfo_width(), 350) / 2, max(self.canvas.winfo_height(), 300) / 2, text="没有符合筛选条件的模块\n\n点击左侧「清除筛选」" if has_nodes else "从一个想学的知识点开始\n\n点击「＋ 新建模块」\n或载入示例，体验知识之间的连接", justify="center", fill="#94a3b8", font=("Microsoft YaHei UI", 13), width=330)
+            cx, cy = width / 2, height / 2
+            half = min(200, max(100, width / 2 - 24))
+            self.rounded_rect(cx - half, cy - 113, cx + half, cy + 113, 20, fill=card, outline=grid)
+            self.canvas.create_text(cx, cy - 65, text="◇  从这里，连接新的知识", fill="#9bbcff" if dark else "#2563eb", font=("Microsoft YaHei UI", 13, "bold"))
+            self.canvas.create_text(cx, cy - 10, text="没有匹配的模块，试试清除筛选" if has_nodes else "这是一张属于你的空白地图\n添加论文、知识点，逐步连接学习路线", fill=muted, font=("Microsoft YaHei UI", 10), justify="center", width=half * 2 - 24)
+            self.rounded_rect(cx - 85, cy + 40, cx + 85, cy + 78, 10, fill="#2563eb", outline="", tags="empty-action")
+            self.canvas.create_text(cx, cy + 59, text="清除筛选" if has_nodes else "＋ 添加第一个模块", fill="white", font=("Microsoft YaHei UI", 10), tags="empty-action")
             return
         edges = [e for e in self.store.edges() if e["source"] in self.visible and e["target"] in self.visible]
         groups = {}
@@ -495,7 +631,8 @@ class LearningMap(tk.Tk):
                 # Canonical direction keeps opposite arrows on distinct curves.
                 sign = 1 if edge["source"] < edge["target"] else -1
                 mid = ((start[0] + end[0]) / 2 - dy / length * bend * sign, (start[1] + end[1]) / 2 + dx / length * bend * sign)
-                options = dict(fill=EDGE_COLORS[edge["kind"]], width=max(1, 1.6 * s), arrow="none" if edge["kind"] == "相关内容" else "last", arrowshape=(9, 11, 4), smooth=True)
+                color = {"前置依赖": "#9badc8", "进阶延伸": "#b69bff", "相关内容": "#52cdb7"}[edge["kind"]] if dark else EDGE_COLORS[edge["kind"]]
+                options = dict(fill=color, width=max(1, 1.8 * s), arrow="none" if edge["kind"] == "相关内容" else "last", arrowshape=(9, 11, 4), smooth=True)
                 if edge["kind"] != "前置依赖":
                     options["dash"] = (7, 4) if edge["kind"] == "进阶延伸" else (2, 5)
                 self.canvas.create_line(*start, *mid, *end, **options)
@@ -507,17 +644,28 @@ class LearningMap(tk.Tk):
             w, h = 100 * s, 44 * s
             fill, accent = COLORS[node["state"]]
             tag = f"node:{nid}"
-            self.canvas.create_rectangle(x - w + 3, y - h + 4, x + w + 3, y + h + 4, fill="#e8edf4", outline="", tags=tag)
-            self.canvas.create_rectangle(x - w, y - h, x + w, y + h, fill=fill, outline="#2563eb" if nid == self.selected else "#d9e2ef", width=2 if nid == self.selected else 1, tags=tag)
-            self.canvas.create_rectangle(x - w, y - h, x - w + 4 * s, y + h, fill=accent, outline="", tags=tag)
+            if dark:
+                accent = {"未开始": "#adbed5", "学习中": "#8ab5ff", "已完成": "#65dab9"}[node["state"]]
+            self.rounded_rect(x - w + 2, y - h + 5, x + w + 2, y + h + 5, 12 * s, fill=shadow, outline="", tags=tag)
+            self.rounded_rect(x - w, y - h, x + w, y + h, 12 * s, fill=card, outline="#6296ff" if nid == self.selected else grid, width=2 if nid == self.selected else 1, tags=tag)
+            self.canvas.create_oval(x - w + 13*s, y + 23*s, x - w + 19*s, y + 29*s, fill=accent, outline="", tags=tag)
             title = node["title"] if len(node["title"]) <= 24 else node["title"][:23] + "…"
-            self.canvas.create_text(x, y - 11 * s, text=title, width=180 * s, font=("Microsoft YaHei UI", max(7, round(11 * s)), "bold"), fill="#1e293b", tags=tag)
+            self.canvas.create_text(x, y - 11 * s, text=title, width=180 * s, font=("Microsoft YaHei UI", max(7, round(11 * s)), "bold"), fill="#edf3ff" if dark else "#1e293b", tags=tag)
             self.canvas.create_text(x, y + 26 * s, text=f"{node['kind']}  ·  {node['state']}", font=("Microsoft YaHei UI", max(6, round(9 * s))), fill=accent, tags=tag)
-        self.canvas.create_text(14, 16, anchor="w", text=f"{round(s * 100)}%", fill="#94a3b8", font=("Microsoft YaHei UI", 9))
+        self.rounded_rect(10, 10, 132, 38, 8, fill=card, outline=grid)
+        self.canvas.create_text(22, 24, anchor="w", text=f"{round(s * 100)}%  ·  {len(self.visible)} 个模块", fill=muted, font=("Microsoft YaHei UI", 9))
+
+    def rounded_rect(self, x1, y1, x2, y2, radius, **options):
+        r = min(radius, (x2-x1)/2, (y2-y1)/2)
+        points = [x1+r,y1, x2-r,y1, x2,y1, x2,y1+r, x2,y2-r, x2,y2, x2-r,y2, x1+r,y2, x1,y2, x1,y2-r, x1,y1+r, x1,y1]
+        return self.canvas.create_polygon(points, smooth=True, splinesteps=20, **options)
 
     def canvas_press(self, event):
         current = self.canvas.find_withtag("current")
         tags = self.canvas.gettags(current[0]) if current else ()
+        if "empty-action" in tags:
+            self.clear_filters() if self.positions else self.new_node()
+            return
         node_tag = next((tag for tag in tags if tag.startswith("node:")), None)
         if node_tag:
             nid = int(node_tag.split(":")[1])
@@ -559,13 +707,14 @@ class LearningMap(tk.Tk):
         self.draw()
 
     def report_callback_exception(self, exc, value, traceback):
-        import traceback as tb
-        tb.print_exception(exc, value, traceback)
+        import logging
+        logging.error("UI action failed", exc_info=(exc, value, traceback))
         messagebox.showerror("操作未完成", f"{value}\n\n数据文件：{self.store.path}", parent=self)
 
     def close(self):
         if self.ensure_saved():
             self.store.close()
+            self.library.close()
             self.destroy()
 
 

@@ -74,6 +74,58 @@ class UITests(unittest.TestCase):
                             visible_buttons(widget)
             finally:
                 app.store.close()
+                app.library.close()
+                app.destroy()
+
+    def test_new_map_switch_cancel_and_background(self):
+        with TestDirectory() as directory:
+            app = LearningMap(Path(directory) / "test.db")
+            try:
+                app.update()
+                app.demo()
+                app.select(1)
+                app.notes.insert("end", "还未保存的笔记")
+                with patch("app.messagebox.askyesnocancel", return_value=None):
+                    app.new_map()
+                self.assertEqual(len(app.library.maps()), 1)
+                with patch("app.messagebox.askyesnocancel", return_value=True), patch("app.simpledialog.askstring", return_value="新的学习路线"):
+                    app.new_map()
+                self.assertEqual(app.store.nodes(), [])
+                self.assertEqual(app.store.edges(), [])
+                self.assertEqual(app.visible, set())
+                self.assertIsNone(app.selected)
+                self.assertEqual(app.notes.get("1.0", "end-1c"), "")
+                self.assertTrue(app.canvas.find_withtag("empty-action"))
+                new_map = app.map_id
+                app.theme.set("午夜星空")
+                app.change_theme()
+                self.assertEqual(app.canvas.cget("background"), "#182338")
+                with patch("app.simpledialog.askstring", return_value="新模块"):
+                    app.new_node()
+                app.notes.insert("end", "未保存")
+                app.map_name.set("我的第一张地图")
+                with patch("app.messagebox.askyesnocancel", return_value=None):
+                    app.switch_map()
+                self.assertEqual(app.map_id, new_map)
+                self.assertEqual(app.map_name.get(), "新的学习路线")
+                app.map_name.set("我的第一张地图")
+                with patch("app.messagebox.askyesnocancel", return_value=True):
+                    app.switch_map()
+                self.assertEqual(len(app.store.nodes()), 6)
+                self.assertIn("还未保存的笔记", app.store.node(1)["notes"])
+                app.map_name.set("新的学习路线")
+                app.switch_map()
+                self.assertEqual(len(app.store.nodes()), 1)
+                self.assertEqual(app.theme.get(), "午夜星空")
+                self.assertEqual(app.undo_stack, [])
+                for theme in ("晴空点阵", "暖纸网格", "午夜星空"):
+                    app.theme.set(theme)
+                    app.change_theme()
+                    app.zoom(SimpleNamespace(x=100, y=100, delta=120))
+                    self.assertTrue(app.canvas.find_withtag("background"))
+            finally:
+                app.store.close()
+                app.library.close()
                 app.destroy()
 
 
