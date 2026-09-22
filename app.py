@@ -1,4 +1,4 @@
-"""Learning Map — a dependency-free Python desktop application."""
+"""Learning Map — a Python desktop application with optional Agent analysis."""
 from __future__ import annotations
 
 import argparse
@@ -71,7 +71,7 @@ class LearningMap(tk.Tk):
         self.bind("<Control-f>", lambda e: self.search_entry.focus_set())
         self.protocol("WM_DELETE_WINDOW", self.close)
         self.refresh()
-        self.after(100, self.fit)
+        self._fit_job = self.after(100, self.fit)
 
     def _build_ui(self):
         style = ttk.Style(self)
@@ -119,6 +119,7 @@ class LearningMap(tk.Tk):
         SoftButton(maps_bar, "＋ 新建地图", self.new_map, width=118).pack(side="left", padx=(0, 8))
         ttk.Button(maps_bar, text="地图设置", command=self.rename_map).pack(side="left")
         ttk.Button(maps_bar, text="外观设置", command=self.edit_appearance).pack(side="left", padx=(8, 0))
+        ttk.Button(maps_bar, text="从论文生成地图", command=self.paper_dialog).pack(side="left", padx=8)
         self.theme = tk.StringVar(value=self.library.get(self.map_id)["theme"])
         theme_picker = ttk.Combobox(maps_bar, textvariable=self.theme, values=THEMES, state="readonly", width=11)
         theme_picker.pack(side="right")
@@ -311,6 +312,17 @@ class LearningMap(tk.Tk):
         except (OSError, ValueError) as error:
             self.refresh_map_picker()
             messagebox.showerror("切换失败", str(error), parent=self)
+
+    def paper_dialog(self):
+        if not self.ensure_saved():
+            return
+        current = getattr(self, "paper_window", None)
+        if current is not None and current.winfo_exists():
+            current.lift()
+            return current
+        from paper_dialog import PaperDialog
+        self.paper_window = PaperDialog(self)
+        return self.paper_window
 
     def new_map(self):
         if not self.ensure_saved():
@@ -880,20 +892,36 @@ class LearningMap(tk.Tk):
         messagebox.showerror("操作未完成", f"{value}\n\n数据文件：{self.store.path}", parent=self)
 
     def close(self):
+        paper = getattr(self, "paper_window", None)
+        if paper is not None and paper.winfo_exists():
+            paper.cancel()
+            if paper.winfo_exists():
+                return
         if self.ensure_saved():
             self.store.close()
             self.library.close()
             self.destroy()
+
+    def destroy(self):
+        for name in ("_draw_job", "_fit_job"):
+            job = getattr(self, name, None)
+            if job:
+                self.after_cancel(job)
+                setattr(self, name, None)
+        super().destroy()
 
 
 def main():
     parser = argparse.ArgumentParser(description="知路 · 本地学习地图")
     parser.add_argument("--db", type=Path, help="指定 SQLite 数据文件")
     parser.add_argument("--smoke-test", type=Path, help=argparse.SUPPRESS)
+    parser.add_argument("--paper-smoke-task", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--version", action="version", version=__version__)
     args = parser.parse_args()
     if args.smoke_test and not args.db:
         parser.error("--smoke-test requires an isolated --db")
+    if args.paper_smoke_task and not args.smoke_test:
+        parser.error("--paper-smoke-task requires --smoke-test")
     database = args.db or prepare_data_dir() / "learning_map.db"
     database.parent.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(filename=database.parent / "app.log", encoding="utf-8", level=logging.ERROR)
@@ -913,6 +941,17 @@ def main():
         result = {"version": __version__, "visible": bool(app.winfo_viewable()),
                   "console": ctypes.windll.kernel32.GetConsoleWindow(), "nodes": len(app.store.nodes()),
                   "editor": editor_visible and "Packaged editor verification" in app.store.node(app.selected)["notes"]}
+        if args.paper_smoke_task:
+            from threading import Event
+            from paper_agent import extract_pdf, read_json
+            pages = extract_pdf(args.paper_smoke_task / "paper.pdf", Event(), lambda s: None)
+            assistant = app.paper_dialog()
+            assistant.set_task(args.paper_smoke_task)
+            assistant.accept_result(read_json(args.paper_smoke_task / "result.json"))
+            assistant.update()
+            shown = bool(assistant.winfo_viewable())
+            assistant.submit()
+            result["paper"] = bool(pages) and shown and len(app.store.nodes()) == 2
         app.close()
         args.smoke_test.write_text(json.dumps(result), encoding="utf-8")
         return

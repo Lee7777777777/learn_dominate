@@ -64,16 +64,20 @@ def main():
     # Test the actual executable with isolated data, not the user's maps.
     from test_support import TestDirectory
     with TestDirectory() as temp:
+        from test_paper import fixture
+        from paper_agent import write_json
+        task, _, _, paper_result = fixture(temp)
+        write_json(task / 'result.json', paper_result)
         marker = Path(temp) / 'result.json'
-        subprocess.run([str(executable), '--db', str(Path(temp) / 'smoke.db'), '--smoke-test', str(marker)], check=True, timeout=90)
+        subprocess.run([str(executable), '--db', str(Path(temp) / 'smoke.db'), '--smoke-test', str(marker), '--paper-smoke-task', str(task)], check=True, timeout=90)
         result = json.loads(marker.read_text(encoding='utf-8'))
-        expected = dict(version=__version__, visible=True, console=0, nodes=6, editor=True)
+        expected = dict(version=__version__, visible=True, console=0, nodes=6, editor=True, paper=True)
         if result != expected:
             raise RuntimeError(f'Packaged app smoke test failed: {result}')
     archive = output / (name + '.zip')
     with zipfile.ZipFile(archive, 'w', compression=zipfile.ZIP_DEFLATED) as bundle:
         bundle.write(executable, executable.name)
-        for file in ('README.md', 'LICENSE', 'CHANGELOG.md'):
+        for file in ('README.md', 'LICENSE', 'CHANGELOG.md', 'PAPER_ASSISTANT.md'):
             bundle.write(ROOT / file, file)
     checksum = output / 'SHA256SUMS.txt'
     checksum.write_text(''.join(f'{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.name}\n' for p in (executable, archive)), encoding='utf-8')

@@ -69,12 +69,27 @@ class MapLibrary:
             raise ValueError("已有同名地图，请换一个名称。")
         return title
 
-    def create(self, title):
+    def create(self, title, snapshot=None):
         title = self.validate_title(title)
+        if snapshot is not None:
+            Store.validate_snapshot(snapshot)
         map_id = uuid4().hex
-        with self.db:
-            self.db.execute("INSERT INTO maps (id,title,theme) VALUES (?,?,?)", (map_id, title, THEMES[0]))
-            Store(self.path(map_id)).close()
+        path = None
+        try:
+            with self.db:
+                self.db.execute("INSERT INTO maps (id,title,theme) VALUES (?,?,?)", (map_id, title, THEMES[0]))
+                path = self.path(map_id)
+                store = Store(path)
+                try:
+                    if snapshot is not None:
+                        store.restore(snapshot)
+                        store.layout()
+                finally:
+                    store.close()
+        except Exception:
+            if path is not None:
+                path.unlink(missing_ok=True)
+            raise
         return map_id
 
     def rename(self, map_id, title):

@@ -26,7 +26,9 @@ jobs:
           $version = python -c "from version import __version__; print(__version__)"
           if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -ne "v$version") { throw 'Tag and version.py must match' }
       - name: Test application
-        run: python -m unittest test_storage test_library test_runtime test_ui test_launcher -v
+        run: |
+          python -m pip install -r requirements.txt
+          python -m unittest test_storage test_library test_runtime test_ui test_launcher test_paper -v
       - name: Install build tools
         run: python -m pip install -r requirements-build.txt
       - name: Build and smoke-test Windows EXE

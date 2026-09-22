@@ -12,7 +12,9 @@
 
 ## 启动
 
-需要 Python 3.10 或更新版本，并包含 Tkinter（Windows 官方 Python 安装器中的 Tcl/Tk 组件）。无需 pip 安装第三方库。
+新版支持 **Codex 自动分析论文** 与 **外部 Agent 任务包交换**，详见 [论文学习助手使用说明](PAPER_ASSISTANT.md)。扫描版 PDF 需要先做 OCR，Codex CLI 需单独安装并登录。
+
+需要 Python 3.10 或更新版本，并包含 Tkinter（Windows 官方 Python 安装器中的 Tcl/Tk 组件）。源码运行前执行 `python -m pip install -r requirements.txt` 安装 PDF 解析库；下载 EXE 无需安装 Python 或依赖。
 
 在 Windows **双击 `start.vbs`**，直接打开图形界面，不显示 PowerShell 或命令行窗口。也可双击 `start.pyw`（需要正确的 Python 文件关联）。原 `start.bat` 已改为转交无控制台入口，但双击批处理本身可能短暂闪过命令行，因此推荐使用 `start.vbs`。
 

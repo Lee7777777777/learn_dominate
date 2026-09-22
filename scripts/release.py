@@ -31,7 +31,7 @@ def main():
     git('fetch', 'origin', 'main')
     if subprocess.call(['git', 'merge-base', '--is-ancestor', 'origin/main', 'HEAD'], cwd=ROOT) != 0:
         parser.error('本地分支落后或已分叉，请先同步远程代码')
-    subprocess.run([sys.executable, '-m', 'unittest', 'test_storage', 'test_library', 'test_runtime', 'test_ui', 'test_launcher', '-v'], cwd=ROOT, check=True)
+    subprocess.run([sys.executable, '-m', 'unittest', 'test_storage', 'test_library', 'test_runtime', 'test_ui', 'test_launcher', 'test_paper', '-v'], cwd=ROOT, check=True)
     (ROOT / 'version.py').write_text(f'"""Single source of truth for the app and release version."""\n__version__ = "{args.version}"\n', encoding='utf-8')
     changelog = ROOT / 'CHANGELOG.md'
     previous = changelog.read_text(encoding='utf-8').split('\n', 1)[1].lstrip()
